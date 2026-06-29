@@ -1,3 +1,15 @@
 server:
   host: 127.0.0.1
   port: "8787"
+  maxBodySize: 1MiB
+  logRoutes: false
+
+runner:
+  timeout: 10m
+
+workspace:
+  root: "."
+
+log:
+  level: info
+  format: text

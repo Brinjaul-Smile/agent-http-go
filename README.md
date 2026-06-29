@@ -36,6 +36,18 @@ http://127.0.0.1:8787
 server:
   host: 127.0.0.1
   port: "8787"
+  maxBodySize: 1MiB
+  logRoutes: false
+
+runner:
+  timeout: 10m
+
+workspace:
+  root: "."
+
+log:
+  level: info
+  format: text
 ```
 
 如果需要加载其它配置文件，可以使用 `CONFIG_FILE`：
@@ -61,6 +73,65 @@ HOST=0.0.0.0 PORT=8080 /Users/grimm/sdk/go1.25.0/bin/go run ./cmd/agent-http-go
 1. 默认值：`127.0.0.1:8787`
 2. `config.yaml`
 3. 环境变量：`HOST` / `PORT`
+
+### Agent 执行超时
+
+`runner.timeout` 控制单次 agent CLI 子进程最多可以执行多久，默认是 `10m`。
+
+配置值使用 Go duration 格式，例如：
+
+- `30s`
+- `10m`
+- `1h`
+
+### 请求体大小
+
+`server.maxBodySize` 控制 JSON 请求体最大大小，默认是 `1MiB`。
+
+支持的单位：
+
+- `B`
+- `KiB`
+- `MiB`
+- `GiB`
+
+也可以直接写字节数，例如 `1048576`。
+
+### 工作区根目录
+
+`workspace.root` 控制 agent 子进程允许使用的工作区边界，默认是当前目录 `.`。
+
+请求体里的 `cwd` 必须解析到该目录内部，否则会返回 `400`：
+
+```yaml
+workspace:
+  root: "."
+```
+
+### 日志格式和级别
+
+`log.level` 控制日志级别，支持：
+
+- `debug`
+- `info`
+- `warn`
+- `error`
+
+`log.format` 控制日志格式，支持：
+
+- `text`
+- `json`
+
+### 路由注册日志
+
+生产环境默认不输出路由注册日志。如果需要像 Gin 那样在启动时打印路由表，可以在 YAML 中打开：
+
+```yaml
+server:
+  logRoutes: true
+```
+
+开启后会通过 `slog` 输出每个注册路由的 `method`、`path` 和 `handler`。
 
 ## 接口
 
@@ -177,8 +248,8 @@ curl -sS -X POST 'http://127.0.0.1:8787/codex?debug=1' \
 
 ## 限制
 
-- 请求体最大 `1 MiB`。
-- 单次 agent 执行超时时间为 `10 分钟`。
+- 请求体大小由 `server.maxBodySize` 控制，默认 `1MiB`。
+- 单次 agent 执行超时时间由 `runner.timeout` 控制，默认 `10m`。
 - 每个运行请求都会启动一个 CLI 子进程。
 - 超时返回 HTTP `504`。
 - 未知路由返回 HTTP `404`。

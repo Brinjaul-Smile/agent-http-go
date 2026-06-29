@@ -37,7 +37,7 @@ type RunResult struct {
 }
 
 // Runner 执行一次 agent 请求。
-type Runner func(RunRequest) (RunResult, error)
+type Runner func(context.Context, RunRequest) (RunResult, error)
 
 // RunnerOptions 注入进程执行所需的工作区、环境变量和超时时间。
 type RunnerOptions struct {
@@ -82,6 +82,11 @@ func ResolveWorkspaceCwd(inputCwd, workspaceRoot string) (string, error) {
 
 // RunCodex 以非交互方式执行 codex，并从 codex 写出的输出文件读取最终回复。
 func RunCodex(body RunRequest, options RunnerOptions) (RunResult, error) {
+	return RunCodexContext(context.Background(), body, options)
+}
+
+// RunCodexContext 以非交互方式执行 codex，并从 codex 写出的输出文件读取最终回复。
+func RunCodexContext(ctx context.Context, body RunRequest, options RunnerOptions) (RunResult, error) {
 	env := runnerEnv(options.Env)
 	workspaceRoot := runnerWorkspaceRoot(options.WorkspaceRoot)
 	timeout := runnerTimeout(options.Timeout)
@@ -111,7 +116,7 @@ func RunCodex(body RunRequest, options RunnerOptions) (RunResult, error) {
 	defer os.RemoveAll(tempDir)
 
 	outputPath := filepath.Join(tempDir, "last-message.txt")
-	childResult := runChild(prompt, timeout, execCommandSpec{
+	childResult := runChild(ctx, prompt, timeout, execCommandSpec{
 		Name: path,
 		Args: []string{"exec", "--skip-git-repo-check", "-C", cwd, "-o", outputPath, "-"},
 		Cwd:  cwd,
@@ -163,6 +168,11 @@ func RunCodex(body RunRequest, options RunnerOptions) (RunResult, error) {
 
 // RunClaude 以 JSON 输出模式执行 Claude Code，并把 result 字段归一化成 RunResult。
 func RunClaude(body RunRequest, options RunnerOptions) (RunResult, error) {
+	return RunClaudeContext(context.Background(), body, options)
+}
+
+// RunClaudeContext 以 JSON 输出模式执行 Claude Code，并把 result 字段归一化成 RunResult。
+func RunClaudeContext(ctx context.Context, body RunRequest, options RunnerOptions) (RunResult, error) {
 	env := runnerEnv(options.Env)
 	workspaceRoot := runnerWorkspaceRoot(options.WorkspaceRoot)
 	timeout := runnerTimeout(options.Timeout)
@@ -185,7 +195,7 @@ func RunClaude(body RunRequest, options RunnerOptions) (RunResult, error) {
 		return RunResult{}, NewRequestError("claude CLI not found in PATH", http.StatusServiceUnavailable)
 	}
 
-	childResult := runChild(prompt, timeout, execCommandSpec{
+	childResult := runChild(ctx, prompt, timeout, execCommandSpec{
 		Name: path,
 		Args: []string{"--bare", "-p", "--output-format", "json"},
 		Cwd:  cwd,
@@ -266,40 +276,61 @@ type childResult struct {
 }
 
 // runChild 启动 CLI 子进程，把 prompt 写入 stdin，并收集 stdout/stderr。
-func runChild(prompt string, timeout time.Duration, spec execCommandSpec) childResult {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func runChild(ctx context.Context, prompt string, timeout time.Duration, spec execCommandSpec) childResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, spec.Name, spec.Args...)
+	cmd := exec.Command(spec.Name, spec.Args...)
 	cmd.Dir = spec.Cwd
 	cmd.Env = spec.Env
 	cmd.Stdin = strings.NewReader(prompt)
 
-	// 将 CLI 放到独立进程组里，超时时可以一起终止 shell wrapper 和子进程，
+	// 将 CLI 放到独立进程组里，取消时可以一起终止 shell wrapper 和子进程，
 	// 避免只杀掉 exec 启动的第一个进程。
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-	cmd.WaitDelay = time.Second
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
 	result := childResult{
 		Stdout: stdout.String(),
 		Stderr: stderr.String(),
 	}
 
-	if ctx.Err() == context.DeadlineExceeded {
-		result.TimedOut = true
+	if err := ctx.Err(); err != nil {
+		result.Err = err
+		return result
 	}
+
+	if err := cmd.Start(); err != nil {
+		result.Err = err
+		return result
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Wait()
+	}()
+
+	var err error
+	select {
+	case err = <-errCh:
+	case <-ctx.Done():
+		err = stopProcessGroup(cmd, errCh)
+		if ctx.Err() == context.DeadlineExceeded {
+			result.TimedOut = true
+		} else {
+			result.Err = ctx.Err()
+		}
+	}
+
+	result.Stdout = stdout.String()
+	result.Stderr = stderr.String()
 
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
@@ -317,6 +348,21 @@ func runChild(prompt string, timeout time.Duration, spec execCommandSpec) childR
 	}
 
 	return result
+}
+
+func stopProcessGroup(cmd *exec.Cmd, errCh <-chan error) error {
+	if cmd.Process == nil {
+		return <-errCh
+	}
+
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	select {
+	case err := <-errCh:
+		return err
+	case <-time.After(time.Second):
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		return <-errCh
+	}
 }
 
 // readOutputFile 读取 codex -o 参数写出的最终消息文件。

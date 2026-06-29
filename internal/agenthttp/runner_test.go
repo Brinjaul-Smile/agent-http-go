@@ -1,6 +1,7 @@
 package agenthttp
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -179,6 +180,31 @@ func TestRunCodexTimesOutAndTerminatesFakeCodex(t *testing.T) {
 	}
 	if !result.TimedOut {
 		t.Fatal("timedOut = false, want true")
+	}
+}
+
+func TestRunClaudeContextCancelsFakeClaude(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fake command is POSIX-only")
+	}
+
+	workspaceRoot := t.TempDir()
+	binDir := t.TempDir()
+	writeFakeCommand(t, binDir, "claude", "#!/bin/sh\nsleep 10\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	_, err := RunClaudeContext(ctx, RunRequest{Prompt: "hello", Cwd: workspaceRoot}, RunnerOptions{
+		WorkspaceRoot: workspaceRoot,
+		Env:           envWithPath(binDir),
+		Timeout:       5 * time.Second,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context canceled", err)
 	}
 }
 

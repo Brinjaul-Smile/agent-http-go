@@ -2,17 +2,20 @@ package agenthttp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
 func TestGETHealthReturnsOK(t *testing.T) {
 	server := NewServer(ServerOptions{
 		Runners: map[string]Runner{
-			"codex": func(RunRequest) (RunResult, error) {
+			"codex": func(context.Context, RunRequest) (RunResult, error) {
 				return RunResult{OK: true}, nil
 			},
 		},
@@ -50,10 +53,49 @@ func TestGETAgentsReturnsAgentAvailability(t *testing.T) {
 	})
 }
 
+func TestNewServerLogsRegisteredRoutesWhenEnabled(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	_ = NewServer(ServerOptions{
+		LogRoutes: true,
+		Logger:    logger,
+	})
+
+	output := logs.String()
+	for _, expected := range []string{
+		"method=GET path=/health",
+		"method=GET path=/agents",
+		"method=POST path=/codex",
+		"method=POST path=/runs",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("route log missing %q in:\n%s", expected, output)
+		}
+	}
+}
+
+func TestNewServerDoesNotLogRegisteredRoutesByDefault(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	_ = NewServer(ServerOptions{
+		Logger: logger,
+	})
+
+	if logs.Len() != 0 {
+		t.Fatalf("logs = %q, want empty", logs.String())
+	}
+}
+
 func TestPOSTCodexReturnsRunnerResult(t *testing.T) {
 	server := NewServer(ServerOptions{
 		Runners: map[string]Runner{
-			"codex": func(request RunRequest) (RunResult, error) {
+			"codex": func(_ context.Context, request RunRequest) (RunResult, error) {
 				exitCode := 0
 				return RunResult{
 					OK:       true,
@@ -81,10 +123,10 @@ func TestPOSTCodexReturnsRunnerResult(t *testing.T) {
 func TestPOSTRunsDispatchesToRequestedRunner(t *testing.T) {
 	server := NewServer(ServerOptions{
 		Runners: map[string]Runner{
-			"codex": func(RunRequest) (RunResult, error) {
+			"codex": func(context.Context, RunRequest) (RunResult, error) {
 				return RunResult{}, errors.New("codex runner should not be called")
 			},
-			"claude": func(request RunRequest) (RunResult, error) {
+			"claude": func(_ context.Context, request RunRequest) (RunResult, error) {
 				exitCode := 0
 				return RunResult{
 					OK:       true,
@@ -112,7 +154,7 @@ func TestPOSTRunsDispatchesToRequestedRunner(t *testing.T) {
 func TestPOSTRunsRejectsUnknownAgent(t *testing.T) {
 	server := NewServer(ServerOptions{
 		Runners: map[string]Runner{
-			"codex": func(RunRequest) (RunResult, error) {
+			"codex": func(context.Context, RunRequest) (RunResult, error) {
 				return RunResult{OK: true}, nil
 			},
 		},
@@ -146,7 +188,7 @@ func TestPOSTRunsDefaultRunnerListIncludesClaudeInNodeOrder(t *testing.T) {
 func TestPOSTCodexMapsMissingCLIErrorsTo503(t *testing.T) {
 	server := NewServer(ServerOptions{
 		Runners: map[string]Runner{
-			"codex": func(RunRequest) (RunResult, error) {
+			"codex": func(context.Context, RunRequest) (RunResult, error) {
 				return RunResult{}, NewRequestError("codex CLI not found in PATH", http.StatusServiceUnavailable)
 			},
 		},
@@ -166,7 +208,7 @@ func TestPOSTCodexMapsMissingCLIErrorsTo503(t *testing.T) {
 func TestPOSTCodexReturnsDebugOutputWhenRequested(t *testing.T) {
 	server := NewServer(ServerOptions{
 		Runners: map[string]Runner{
-			"codex": func(request RunRequest) (RunResult, error) {
+			"codex": func(_ context.Context, request RunRequest) (RunResult, error) {
 				exitCode := 0
 				return RunResult{
 					OK:       true,
@@ -198,7 +240,7 @@ func TestPOSTCodexReturnsDebugOutputWhenRequested(t *testing.T) {
 func TestPOSTCodexFormatsFailedRunnerResultWithoutDebugByDefault(t *testing.T) {
 	server := NewServer(ServerOptions{
 		Runners: map[string]Runner{
-			"codex": func(RunRequest) (RunResult, error) {
+			"codex": func(context.Context, RunRequest) (RunResult, error) {
 				exitCode := 7
 				return RunResult{
 					OK:       false,
@@ -228,7 +270,7 @@ func TestPOSTCodexFormatsFailedRunnerResultWithoutDebugByDefault(t *testing.T) {
 func TestPOSTCodexReturns504ForTimedOutRunnerResult(t *testing.T) {
 	server := NewServer(ServerOptions{
 		Runners: map[string]Runner{
-			"codex": func(RunRequest) (RunResult, error) {
+			"codex": func(context.Context, RunRequest) (RunResult, error) {
 				return RunResult{OK: false, Error: "codex execution timed out", TimedOut: true, Output: ""}, nil
 			},
 		},
@@ -250,7 +292,7 @@ func TestPOSTCodexReturns504ForTimedOutRunnerResult(t *testing.T) {
 func TestPOSTCodexAllowsEmptyBodyToReachRunnerValidation(t *testing.T) {
 	server := NewServer(ServerOptions{
 		Runners: map[string]Runner{
-			"codex": func(request RunRequest) (RunResult, error) {
+			"codex": func(_ context.Context, request RunRequest) (RunResult, error) {
 				_, err := ValidatePrompt(request)
 				return RunResult{}, err
 			},
@@ -271,7 +313,7 @@ func TestPOSTCodexAllowsEmptyBodyToReachRunnerValidation(t *testing.T) {
 func TestPOSTCodexReturns400ForInvalidJSON(t *testing.T) {
 	server := NewServer(ServerOptions{
 		Runners: map[string]Runner{
-			"codex": func(RunRequest) (RunResult, error) {
+			"codex": func(context.Context, RunRequest) (RunResult, error) {
 				return RunResult{OK: true}, nil
 			},
 		},
@@ -285,6 +327,27 @@ func TestPOSTCodexReturns400ForInvalidJSON(t *testing.T) {
 	assertJSON(t, response, map[string]any{
 		"ok":    false,
 		"error": "invalid JSON body",
+	})
+}
+
+func TestPOSTCodexReturns413WhenBodyIsTooLarge(t *testing.T) {
+	server := NewServer(ServerOptions{
+		MaxBodyBytes: 8,
+		Runners: map[string]Runner{
+			"codex": func(context.Context, RunRequest) (RunResult, error) {
+				return RunResult{OK: true}, nil
+			},
+		},
+	})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/codex", bytes.NewBufferString(`{"prompt":"hello"}`))
+	server.ServeHTTP(response, request)
+
+	assertStatus(t, response, http.StatusRequestEntityTooLarge)
+	assertJSON(t, response, map[string]any{
+		"ok":    false,
+		"error": "request body too large",
 	})
 }
 

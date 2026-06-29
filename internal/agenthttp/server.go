@@ -1,9 +1,11 @@
 package agenthttp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -21,6 +23,9 @@ type ServerOptions struct {
 	WorkspaceRoot   string
 	Env             []string
 	Timeout         time.Duration
+	MaxBodyBytes    int64
+	LogRoutes       bool
+	Logger          *slog.Logger
 }
 
 // Server 实现本地 Agent HTTP API。
@@ -28,6 +33,10 @@ type Server struct {
 	runners         map[string]Runner
 	runnerOrder     []string
 	getAvailability func() ([]AgentStatus, error)
+	mux             *http.ServeMux
+	maxBodyBytes    int64
+	logRoutes       bool
+	logger          *slog.Logger
 }
 
 // NewServer 创建 HTTP handler；未传入 runners 时默认启用 codex 和 claude。
@@ -40,15 +49,15 @@ func NewServer(options ServerOptions) *Server {
 	runnerOrder := make([]string, 0, len(runners))
 	if runners == nil {
 		runners = map[string]Runner{
-			"codex": func(request RunRequest) (RunResult, error) {
-				return RunCodex(request, RunnerOptions{
+			"codex": func(ctx context.Context, request RunRequest) (RunResult, error) {
+				return RunCodexContext(ctx, request, RunnerOptions{
 					WorkspaceRoot: workspaceRoot,
 					Env:           env,
 					Timeout:       timeout,
 				})
 			},
-			"claude": func(request RunRequest) (RunResult, error) {
-				return RunClaude(request, RunnerOptions{
+			"claude": func(ctx context.Context, request RunRequest) (RunResult, error) {
+				return RunClaudeContext(ctx, request, RunnerOptions{
 					WorkspaceRoot: workspaceRoot,
 					Env:           env,
 					Timeout:       timeout,
@@ -70,35 +79,74 @@ func NewServer(options ServerOptions) *Server {
 		}
 	}
 
-	return &Server{
+	server := &Server{
 		runners:         runners,
 		runnerOrder:     runnerOrder,
 		getAvailability: getAvailability,
+		maxBodyBytes:    serverMaxBodyBytes(options.MaxBodyBytes),
+		logRoutes:       options.LogRoutes,
+		logger:          options.Logger,
 	}
+	if server.logger == nil {
+		server.logger = slog.Default()
+	}
+	server.mux = server.routes()
+
+	return server
 }
 
-// ServeHTTP 定义 API 路由表。
-func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) {
-	switch {
-	case request.Method == http.MethodGet && request.URL.Path == "/health":
-		sendJSON(response, http.StatusOK, map[string]any{"ok": true})
-	case request.Method == http.MethodGet && request.URL.Path == "/agents":
-		s.handleAgents(response)
-	case request.URL.Path == "/codex" || request.URL.Path == "/runs":
-		s.handleRun(response, request)
-	default:
-		sendJSON(response, http.StatusNotFound, map[string]any{"ok": false, "error": "not found"})
+// routes 使用标准库 ServeMux 注册 API 路由。
+func (s *Server) routes() *http.ServeMux {
+	mux := http.NewServeMux()
+	s.registerRoute(mux, http.MethodGet, "/health", "agenthttp.(*Server).handleHealth", s.handleHealth)
+	s.registerRoute(mux, http.MethodGet, "/agents", "agenthttp.(*Server).handleAgents", s.handleAgents)
+	s.registerRoute(mux, http.MethodPost, "/codex", "agenthttp.(*Server).handleRun", s.handleRun)
+	s.registerRoute(mux, http.MethodPost, "/runs", "agenthttp.(*Server).handleRun", s.handleRun)
+	mux.HandleFunc("/", handleNotFound)
+	return mux
+}
+
+// registerRoute 注册路由，并在配置开启时输出类似 Gin 的路由注册日志。
+func (s *Server) registerRoute(mux *http.ServeMux, method string, path string, handler string, fn http.HandlerFunc) {
+	mux.HandleFunc(path, fn)
+	if !s.logRoutes {
+		return
 	}
+	s.logger.Info("registered route", "method", method, "path", path, "handler", handler)
+}
+
+// ServeHTTP 将请求交给标准库 ServeMux 分发。
+func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	s.mux.ServeHTTP(response, request)
+}
+
+// handleHealth 返回服务健康状态。
+func (s *Server) handleHealth(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		handleNotFound(response, request)
+		return
+	}
+	sendJSON(response, http.StatusOK, map[string]any{"ok": true})
 }
 
 // handleAgents 返回本机已知 agent CLI 的可用性。
-func (s *Server) handleAgents(response http.ResponseWriter) {
+func (s *Server) handleAgents(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		handleNotFound(response, request)
+		return
+	}
+
 	agents, err := s.getAvailability()
 	if err != nil {
 		sendJSON(response, http.StatusInternalServerError, map[string]any{"ok": false, "error": errorMessage(err)})
 		return
 	}
 	sendJSON(response, http.StatusOK, map[string]any{"ok": true, "agents": agents})
+}
+
+// handleNotFound 返回统一 JSON 404，避免 ServeMux 默认返回纯文本错误。
+func handleNotFound(response http.ResponseWriter, _ *http.Request) {
+	sendJSON(response, http.StatusNotFound, map[string]any{"ok": false, "error": "not found"})
 }
 
 // handleRun 同时处理 POST /runs 和兼容接口 POST /codex。
@@ -108,7 +156,7 @@ func (s *Server) handleRun(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 
-	body, err := readJSONBody(request)
+	body, err := s.readJSONBody(request)
 	if err != nil {
 		s.sendError(response, err)
 		return
@@ -120,7 +168,7 @@ func (s *Server) handleRun(response http.ResponseWriter, request *http.Request) 
 		return
 	}
 
-	result, err := runner(body)
+	result, err := runner(request.Context(), body)
 	if err != nil {
 		s.sendError(response, err)
 		return
@@ -168,14 +216,18 @@ func (s *Server) sendError(response http.ResponseWriter, err error) {
 
 // readJSONBody 保持 Node 参考实现的行为：空请求体会变成空请求对象，
 // prompt 等业务校验交给 runner 处理。
-func readJSONBody(request *http.Request) (RunRequest, error) {
+func (s *Server) readJSONBody(request *http.Request) (RunRequest, error) {
 	defer request.Body.Close()
 
-	decoder := json.NewDecoder(http.MaxBytesReader(nil, request.Body, MaxBodyBytes))
+	decoder := json.NewDecoder(http.MaxBytesReader(nil, request.Body, s.maxBodyBytes))
 	var body RunRequest
 	if err := decoder.Decode(&body); err != nil {
 		if errors.Is(err, io.EOF) {
 			return RunRequest{}, nil
+		}
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			return RunRequest{}, NewRequestError("request body too large", http.StatusRequestEntityTooLarge)
 		}
 		return RunRequest{}, NewRequestError("invalid JSON body", http.StatusBadRequest)
 	}
@@ -229,4 +281,11 @@ func errorMessage(err error) string {
 		return "internal server error"
 	}
 	return err.Error()
+}
+
+func serverMaxBodyBytes(maxBodyBytes int64) int64 {
+	if maxBodyBytes > 0 {
+		return maxBodyBytes
+	}
+	return MaxBodyBytes
 }
