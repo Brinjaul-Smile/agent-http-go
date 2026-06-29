@@ -1,6 +1,6 @@
 # Agent HTTP Go
 
-这是 `/Volumes/D/web/codex-http` 本地 Agent HTTP 服务的 Go 版本实现。
+这是本地 Agent HTTP 服务的 Go 版本实现。
 
 服务会把本机已经安装并完成认证的 agent CLI 包装成同步 HTTP API。当前支持执行：
 
@@ -14,10 +14,17 @@
 - 已安装 `codex` CLI，并且服务进程的 `PATH` 中可以找到它。
 - 如需调用 Claude，需要安装 `claude` CLI，并且服务进程的 `PATH` 中可以找到它。
 
+## 主要依赖
+
+- Go 版本：`1.25.0`。
+- 配置解析：`gopkg.in/yaml.v3`。
+- 持久化会话数据库：SQLite。
+- SQLite Go 驱动：`modernc.org/sqlite`，纯 Go 实现，不需要单独部署数据库服务。
+
 ## 启动服务
 
 ```sh
-/Users/grimm/sdk/go1.25.0/bin/go run ./cmd/agent-http-go
+go run ./cmd/agent-http-go
 ```
 
 默认监听地址是：
@@ -61,19 +68,19 @@ session:
 如果需要加载其它配置文件，可以使用 `CONFIG_FILE`：
 
 ```sh
-CONFIG_FILE=./local.yaml /Users/grimm/sdk/go1.25.0/bin/go run ./cmd/agent-http-go
+CONFIG_FILE=./local.yaml go run ./cmd/agent-http-go
 ```
 
 本地个人配置建议命名为 `config.local.yaml`，该文件已加入 `.gitignore`，不会被提交：
 
 ```sh
-CONFIG_FILE=./config.local.yaml /Users/grimm/sdk/go1.25.0/bin/go run ./cmd/agent-http-go
+CONFIG_FILE=./config.local.yaml go run ./cmd/agent-http-go
 ```
 
 `HOST` 和 `PORT` 环境变量会覆盖 YAML 配置，适合部署时临时调整监听地址：
 
 ```sh
-HOST=0.0.0.0 PORT=8080 /Users/grimm/sdk/go1.25.0/bin/go run ./cmd/agent-http-go
+HOST=0.0.0.0 PORT=8080 go run ./cmd/agent-http-go
 ```
 
 配置优先级：
@@ -143,7 +150,7 @@ server:
 
 ### 持久化会话
 
-`session` 控制长对话持久化。默认开启，使用本地 SQLite 文件，不需要单独部署数据库服务。
+`session` 控制长对话持久化。默认开启，使用本地 SQLite 文件，不需要单独部署数据库服务。当前实现使用纯 Go SQLite 驱动 `modernc.org/sqlite`。
 
 ```yaml
 session:
@@ -384,5 +391,5 @@ curl -sS -X POST 'http://127.0.0.1:8787/codex?debug=1' \
 ## 测试
 
 ```sh
-/Users/grimm/sdk/go1.25.0/bin/go test ./...
+go test ./...
 ```
