@@ -6,12 +6,14 @@ import (
 	"strings"
 )
 
+// AgentConfig 描述 /agents 接口需要检查的一个 agent CLI 命令。
 type AgentConfig struct {
 	Name      string
 	Command   string
 	Supported bool
 }
 
+// AgentStatus 表示一个已知 agent 的可用性检查结果，会直接序列化给 HTTP 调用方。
 type AgentStatus struct {
 	Name      string `json:"name"`
 	Command   string `json:"command"`
@@ -20,6 +22,7 @@ type AgentStatus struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// DefaultKnownAgents 返回 /agents 默认检查的 agent 命令列表。
 func DefaultKnownAgents() []AgentConfig {
 	return []AgentConfig{
 		{Name: "codex", Command: "codex", Supported: true},
@@ -36,6 +39,8 @@ func DefaultKnownAgents() []AgentConfig {
 	}
 }
 
+// GetAgentAvailability 只检查 PATH 中是否存在命令，不真正调用模型或 CLI。
+// 这样 /agents 接口开销小，并且没有副作用。
 func GetAgentAvailability(agents []AgentConfig, env []string) ([]AgentStatus, error) {
 	statuses := make([]AgentStatus, 0, len(agents))
 	for _, agent := range agents {
@@ -60,6 +65,7 @@ func GetAgentAvailability(agents []AgentConfig, env []string) ([]AgentStatus, er
 	return statuses, nil
 }
 
+// FindExecutable 在传入的环境变量 PATH 中查找可执行命令。
 func FindExecutable(command string, env []string) (string, error) {
 	for _, directory := range pathDirectories(env) {
 		candidate := filepath.Join(directory, command)
@@ -78,6 +84,7 @@ func FindExecutable(command string, env []string) (string, error) {
 	return "", nil
 }
 
+// pathDirectories 从环境变量中解析 PATH 目录列表。
 func pathDirectories(env []string) []string {
 	pathValue := ""
 	for _, item := range env {

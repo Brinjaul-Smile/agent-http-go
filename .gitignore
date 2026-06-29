@@ -1,23 +1,32 @@
-.buildpath
-.hgignore.swp
-.project
-.orig
-.swp
+# IDE / editor files
 .idea/
 .settings/
 .vscode/
-bin/
+*.swp
+*.orig
+.DS_Store
 **/.DS_Store
-gf
+
+# Go build outputs
+bin/
 main
 main.exe
+*.test
+*.out
+coverage.out
+
+# Local config
+config.local.yaml
+temp.yaml
+
+# Runtime outputs
 output/
 manifest/output/
 temp/
-temp.yaml
-bin
-**/config/config.yaml
-vendor/
+logs/
+
+# Tool caches
 .cache/
-logs
-tests
+
+# Vendored dependencies are not used by this project.
+vendor/

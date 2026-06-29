@@ -1,39 +1,74 @@
 # Agent HTTP Go
 
-This project is a Go implementation of the local Agent HTTP service from
-`/Volumes/D/web/codex-http`.
+这是 `/Volumes/D/web/codex-http` 本地 Agent HTTP 服务的 Go 版本实现。
 
-It exposes installed agent CLIs through a synchronous local HTTP API. The
-currently supported runnable agents are:
+服务会把本机已经安装并完成认证的 agent CLI 包装成同步 HTTP API。当前支持执行：
 
-- `codex`, via `codex exec`.
-- `claude`, via `claude --bare -p --output-format json`.
+- `codex`：通过 `codex exec` 调用。
+- `claude`：通过 `claude --bare -p --output-format json` 调用。
 
-## Requirements
+## 运行要求
 
-- Go 1.25.
-- macOS or Linux.
-- `codex` CLI installed and available in the service process `PATH`.
-- Optional: `claude` CLI installed and available in the service process `PATH`.
+- Go 1.25。
+- macOS 或 Linux。
+- 已安装 `codex` CLI，并且服务进程的 `PATH` 中可以找到它。
+- 如需调用 Claude，需要安装 `claude` CLI，并且服务进程的 `PATH` 中可以找到它。
 
-## Run
+## 启动服务
 
 ```sh
 /Users/grimm/sdk/go1.25.0/bin/go run ./cmd/agent-http-go
 ```
 
-The server listens on `127.0.0.1:8787` by default. Override with `HOST` and
-`PORT`:
+默认监听地址是：
 
-```sh
-HOST=127.0.0.1 PORT=8787 /Users/grimm/sdk/go1.25.0/bin/go run ./cmd/agent-http-go
+```text
+http://127.0.0.1:8787
 ```
 
-## Endpoints
+## 配置文件
+
+服务默认读取当前目录下的 `config.yaml`。如果文件不存在，会使用默认配置继续启动。
+
+示例：
+
+```yaml
+server:
+  host: 127.0.0.1
+  port: "8787"
+```
+
+如果需要加载其它配置文件，可以使用 `CONFIG_FILE`：
+
+```sh
+CONFIG_FILE=./local.yaml /Users/grimm/sdk/go1.25.0/bin/go run ./cmd/agent-http-go
+```
+
+本地个人配置建议命名为 `config.local.yaml`，该文件已加入 `.gitignore`，不会被提交：
+
+```sh
+CONFIG_FILE=./config.local.yaml /Users/grimm/sdk/go1.25.0/bin/go run ./cmd/agent-http-go
+```
+
+`HOST` 和 `PORT` 环境变量会覆盖 YAML 配置，适合部署时临时调整监听地址：
+
+```sh
+HOST=0.0.0.0 PORT=8080 /Users/grimm/sdk/go1.25.0/bin/go run ./cmd/agent-http-go
+```
+
+配置优先级：
+
+1. 默认值：`127.0.0.1:8787`
+2. `config.yaml`
+3. 环境变量：`HOST` / `PORT`
+
+## 接口
 
 ### `GET /health`
 
-Returns:
+健康检查接口。
+
+响应：
 
 ```json
 {"ok":true}
@@ -41,12 +76,36 @@ Returns:
 
 ### `GET /agents`
 
-Reports whether known agent CLI commands are available in `PATH`, and whether
-this service supports running them through `POST /runs`.
+检查常见 agent CLI 是否存在于服务进程的 `PATH` 中，并返回当前服务是否支持通过 `/runs` 调用该 agent。
+
+响应示例：
+
+```json
+{
+  "ok": true,
+  "agents": [
+    {
+      "name": "codex",
+      "command": "codex",
+      "available": true,
+      "supported": true
+    },
+    {
+      "name": "claude",
+      "command": "claude",
+      "available": false,
+      "supported": true,
+      "error": "claude CLI not found in PATH"
+    }
+  ]
+}
+```
 
 ### `POST /runs`
 
-Runs a supported agent:
+通用 agent 调用接口，通过 `agent` 字段选择后端。
+
+请求示例：
 
 ```sh
 curl -sS -X POST http://127.0.0.1:8787/runs \
@@ -54,17 +113,47 @@ curl -sS -X POST http://127.0.0.1:8787/runs \
   -d '{"agent":"codex","prompt":"Reply with exactly: pong"}'
 ```
 
-Request fields:
+请求体：
 
-- `agent`: required for `/runs`; supported values are `codex` and `claude`.
-- `prompt`: required non-empty string.
-- `cwd`: optional; must resolve inside the service workspace.
+```json
+{
+  "agent": "codex",
+  "prompt": "Reply with exactly: pong",
+  "cwd": "./optional-subdir"
+}
+```
+
+字段说明：
+
+- `agent`：必填，当前支持 `codex` 和 `claude`。
+- `prompt`：必填，非空字符串。
+- `cwd`：选填，必须解析到服务工作区内部。
+
+成功响应：
+
+```json
+{
+  "ok": true,
+  "exitCode": 0,
+  "output": "pong"
+}
+```
 
 ### `POST /codex`
 
-Compatibility endpoint equivalent to `POST /runs` with `agent: "codex"`.
+兼容接口，等价于 `POST /runs` 且 `agent` 固定为 `codex`。
 
-Use `debug=1` on `/runs` or `/codex` to include raw stdout and stderr:
+请求示例：
+
+```sh
+curl -sS -X POST http://127.0.0.1:8787/codex \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"Reply with exactly: pong"}'
+```
+
+### 调试输出
+
+`/runs` 和 `/codex` 都支持 `debug=1`。开启后会额外返回原始 stdout 和 stderr。
 
 ```sh
 curl -sS -X POST 'http://127.0.0.1:8787/codex?debug=1' \
@@ -72,13 +161,30 @@ curl -sS -X POST 'http://127.0.0.1:8787/codex?debug=1' \
   -d '{"prompt":"Reply with exactly: pong"}'
 ```
 
-## Limits
+响应示例：
 
-- Maximum request body: 1 MiB.
-- Execution timeout: 10 minutes.
-- Each run starts one CLI child process.
+```json
+{
+  "ok": true,
+  "exitCode": 0,
+  "output": "pong",
+  "debug": {
+    "stdout": "...",
+    "stderr": "..."
+  }
+}
+```
 
-## Test
+## 限制
+
+- 请求体最大 `1 MiB`。
+- 单次 agent 执行超时时间为 `10 分钟`。
+- 每个运行请求都会启动一个 CLI 子进程。
+- 超时返回 HTTP `504`。
+- 未知路由返回 HTTP `404`。
+- 非 POST 方法调用 `/runs` 或 `/codex` 返回 HTTP `405`。
+
+## 测试
 
 ```sh
 /Users/grimm/sdk/go1.25.0/bin/go test ./...

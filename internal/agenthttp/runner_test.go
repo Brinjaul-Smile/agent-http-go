@@ -1,6 +1,7 @@
 package agenthttp
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,7 +17,7 @@ func TestValidatePromptRejectsMissingPrompt(t *testing.T) {
 	}
 
 	var requestErr *RequestError
-	if !AsRequestError(err, &requestErr) {
+	if !errors.As(err, &requestErr) {
 		t.Fatalf("expected RequestError, got %T", err)
 	}
 	if requestErr.StatusCode != 400 {
@@ -37,7 +38,7 @@ func TestResolveWorkspaceCwdRejectsCwdOutsideWorkspace(t *testing.T) {
 	}
 
 	var requestErr *RequestError
-	if !AsRequestError(err, &requestErr) {
+	if !errors.As(err, &requestErr) {
 		t.Fatalf("expected RequestError, got %T", err)
 	}
 	if requestErr.Message != "cwd must be inside workspace" {
@@ -141,7 +142,7 @@ func TestRunCodexReportsClearErrorWhenCodexIsNotInPath(t *testing.T) {
 	}
 
 	var requestErr *RequestError
-	if !AsRequestError(err, &requestErr) {
+	if !errors.As(err, &requestErr) {
 		t.Fatalf("expected RequestError, got %T", err)
 	}
 	if requestErr.StatusCode != 503 {
@@ -222,7 +223,7 @@ func TestRunClaudeReportsClearErrorWhenClaudeIsNotInPath(t *testing.T) {
 	}
 
 	var requestErr *RequestError
-	if !AsRequestError(err, &requestErr) {
+	if !errors.As(err, &requestErr) {
 		t.Fatalf("expected RequestError, got %T", err)
 	}
 	if requestErr.StatusCode != 503 {
@@ -240,7 +241,7 @@ func TestParseClaudeOutputRejectsInvalidJSON(t *testing.T) {
 	}
 
 	var requestErr *RequestError
-	if !AsRequestError(err, &requestErr) {
+	if !errors.As(err, &requestErr) {
 		t.Fatalf("expected RequestError, got %T", err)
 	}
 	if requestErr.StatusCode != 502 {
