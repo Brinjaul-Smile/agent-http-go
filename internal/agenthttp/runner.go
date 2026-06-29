@@ -34,6 +34,8 @@ type RunResult struct {
 	TimedOut bool
 	Stdout   string
 	Stderr   string
+	// SessionID 只由持久化会话接口填充；普通 /runs 和 /codex 保持空值。
+	SessionID string
 }
 
 // Runner 执行一次 agent 请求。

@@ -48,6 +48,14 @@ workspace:
 log:
   level: info
   format: text
+
+session:
+  enabled: true
+  driver: sqlite
+  maxTurns: 20
+  maxHistorySize: 64KiB
+  sqlite:
+    path: ./data/agent-http.db
 ```
 
 如果需要加载其它配置文件，可以使用 `CONFIG_FILE`：
@@ -132,6 +140,30 @@ server:
 ```
 
 开启后会通过 `slog` 输出每个注册路由的 `method`、`path` 和 `handler`。
+
+### 持久化会话
+
+`session` 控制长对话持久化。默认开启，使用本地 SQLite 文件，不需要单独部署数据库服务。
+
+```yaml
+session:
+  enabled: true
+  driver: sqlite
+  maxTurns: 20
+  maxHistorySize: 64KiB
+  sqlite:
+    path: ./data/agent-http.db
+```
+
+字段说明：
+
+- `enabled`：是否启用 `/sessions/{sessionId}` 系列接口。
+- `driver`：当前支持 `sqlite`；代码通过 `SessionStore` 抽象保留后续 RDS 扩展空间。
+- `maxTurns`：拼接历史上下文时最多取最近多少轮成功对话。
+- `maxHistorySize`：拼接历史上下文的最大大小，支持 `B`、`KiB`、`MiB`、`GiB`。
+- `sqlite.path`：SQLite 数据库文件路径。首次启动会自动创建目录、数据库文件和表。
+
+修改配置后需要重启服务生效。
 
 ## 接口
 
@@ -222,9 +254,101 @@ curl -sS -X POST http://127.0.0.1:8787/codex \
   -d '{"prompt":"Reply with exactly: pong"}'
 ```
 
+### `POST /sessions/{sessionId}/runs`
+
+持久化长对话接口。`sessionId` 由调用方生成并稳定复用；同一个 `sessionId` 会复用历史，不同 `sessionId` 相互隔离。
+
+请求示例：
+
+```sh
+curl -sS -X POST http://127.0.0.1:8787/sessions/chat-001/runs \
+  -H 'Content-Type: application/json' \
+  -d '{"agent":"codex","prompt":"我叫张三"}'
+
+curl -sS -X POST http://127.0.0.1:8787/sessions/chat-001/runs \
+  -H 'Content-Type: application/json' \
+  -d '{"agent":"codex","prompt":"我叫什么？"}'
+```
+
+请求体和 `/runs` 相同：
+
+```json
+{
+  "agent": "codex",
+  "prompt": "我叫什么？",
+  "cwd": "./optional-subdir"
+}
+```
+
+规则：
+
+- `sessionId` 允许字母、数字、`.`、`_`、`-`、`:`，最长 128 字节。
+- 第一次调用会创建 session，并绑定当次的 `agent` 和解析后的 `cwd`。
+- 后续同一 session 必须继续使用相同 `agent` 和 `cwd`，否则返回 `400`。
+- 同一个 session 内请求串行执行，不同 session 可并发执行。
+- 只有成功 turn 会参与后续上下文拼接；失败和超时会写入数据库用于审计，但不会污染后续上下文。
+
+成功响应：
+
+```json
+{
+  "ok": true,
+  "sessionId": "chat-001",
+  "exitCode": 0,
+  "output": "你叫张三。"
+}
+```
+
+### `GET /sessions/{sessionId}`
+
+查询持久化会话和消息。
+
+```sh
+curl -sS http://127.0.0.1:8787/sessions/chat-001
+```
+
+响应示例：
+
+```json
+{
+  "ok": true,
+  "session": {
+    "id": "chat-001",
+    "agent": "codex",
+    "cwd": "/path/to/workspace",
+    "createdAt": "2026-06-29T12:00:00Z",
+    "updatedAt": "2026-06-29T12:01:00Z"
+  },
+  "messages": [
+    {
+      "id": 1,
+      "sessionId": "chat-001",
+      "role": "user",
+      "content": "我叫张三",
+      "status": "ok",
+      "createdAt": "2026-06-29T12:00:00Z"
+    }
+  ]
+}
+```
+
+### `DELETE /sessions/{sessionId}`
+
+删除持久化会话和关联消息。接口是幂等的，session 不存在也返回成功。
+
+```sh
+curl -sS -X DELETE http://127.0.0.1:8787/sessions/chat-001
+```
+
+响应：
+
+```json
+{"ok":true}
+```
+
 ### 调试输出
 
-`/runs` 和 `/codex` 都支持 `debug=1`。开启后会额外返回原始 stdout 和 stderr。
+`/runs`、`/codex` 和 `/sessions/{sessionId}/runs` 都支持 `debug=1`。开启后会额外返回原始 stdout 和 stderr。
 
 ```sh
 curl -sS -X POST 'http://127.0.0.1:8787/codex?debug=1' \
@@ -251,6 +375,8 @@ curl -sS -X POST 'http://127.0.0.1:8787/codex?debug=1' \
 - 请求体大小由 `server.maxBodySize` 控制，默认 `1MiB`。
 - 单次 agent 执行超时时间由 `runner.timeout` 控制，默认 `10m`。
 - 每个运行请求都会启动一个 CLI 子进程。
+- 持久化会话使用 SQLite 本地文件；`session.enabled: false` 时不会注册 `/sessions/{sessionId}` 系列接口。
+- 持久化会话只保留并查询本地数据库中的历史，不维护常驻 CLI 进程。
 - 超时返回 HTTP `504`。
 - 未知路由返回 HTTP `404`。
 - 非 POST 方法调用 `/runs` 或 `/codex` 返回 HTTP `405`。

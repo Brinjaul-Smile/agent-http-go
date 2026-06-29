@@ -20,6 +20,8 @@ const MaxBodyBytes = 1024 * 1024
 type ServerOptions struct {
 	Runners         map[string]Runner
 	GetAvailability func() ([]AgentStatus, error)
+	SessionStore    SessionStore
+	SessionOptions  SessionRunOptions
 	WorkspaceRoot   string
 	Env             []string
 	Timeout         time.Duration
@@ -33,6 +35,10 @@ type Server struct {
 	runners         map[string]Runner
 	runnerOrder     []string
 	getAvailability func() ([]AgentStatus, error)
+	sessionStore    SessionStore
+	sessionLocks    *sessionLockStore
+	sessionOptions  SessionRunOptions
+	workspaceRoot   string
 	mux             *http.ServeMux
 	maxBodyBytes    int64
 	logRoutes       bool
@@ -83,9 +89,15 @@ func NewServer(options ServerOptions) *Server {
 		runners:         runners,
 		runnerOrder:     runnerOrder,
 		getAvailability: getAvailability,
+		sessionStore:    options.SessionStore,
+		sessionOptions:  normalizedSessionRunOptions(options.SessionOptions),
+		workspaceRoot:   workspaceRoot,
 		maxBodyBytes:    serverMaxBodyBytes(options.MaxBodyBytes),
 		logRoutes:       options.LogRoutes,
 		logger:          options.Logger,
+	}
+	if server.sessionStore != nil {
+		server.sessionLocks = newSessionLockStore()
 	}
 	if server.logger == nil {
 		server.logger = slog.Default()
@@ -102,13 +114,28 @@ func (s *Server) routes() *http.ServeMux {
 	s.registerRoute(mux, http.MethodGet, "/agents", "agenthttp.(*Server).handleAgents", s.handleAgents)
 	s.registerRoute(mux, http.MethodPost, "/codex", "agenthttp.(*Server).handleRun", s.handleRun)
 	s.registerRoute(mux, http.MethodPost, "/runs", "agenthttp.(*Server).handleRun", s.handleRun)
+	if s.sessionStore != nil {
+		s.registerRoute(mux, http.MethodGet, "/sessions/{sessionId}", "agenthttp.(*Server).handleSession", s.handleSession)
+		s.logRegisteredRoute(http.MethodDelete, "/sessions/{sessionId}", "agenthttp.(*Server).handleSession")
+		s.logRegisteredRoute(http.MethodPost, "/sessions/{sessionId}/runs", "agenthttp.(*Server).handleSession")
+	}
 	mux.HandleFunc("/", handleNotFound)
 	return mux
 }
 
 // registerRoute 注册路由，并在配置开启时输出类似 Gin 的路由注册日志。
 func (s *Server) registerRoute(mux *http.ServeMux, method string, path string, handler string, fn http.HandlerFunc) {
-	mux.HandleFunc(path, fn)
+	if strings.Contains(path, "{") {
+		mux.HandleFunc("/sessions/", fn)
+	} else {
+		mux.HandleFunc(path, fn)
+	}
+	s.logRegisteredRoute(method, path, handler)
+}
+
+// logRegisteredRoute 在开启路由日志时输出注册信息。
+// 对共享同一个 ServeMux 前缀的 session 路由，也按对外 API 路径分别打印。
+func (s *Server) logRegisteredRoute(method string, path string, handler string) {
 	if !s.logRoutes {
 		return
 	}
@@ -149,6 +176,52 @@ func handleNotFound(response http.ResponseWriter, _ *http.Request) {
 	sendJSON(response, http.StatusNotFound, map[string]any{"ok": false, "error": "not found"})
 }
 
+// handleSession 分发持久化会话接口：
+// POST /sessions/{sessionId}/runs、GET /sessions/{sessionId}、DELETE /sessions/{sessionId}。
+func (s *Server) handleSession(response http.ResponseWriter, request *http.Request) {
+	sessionID, action, ok := parseSessionPath(request.URL.Path)
+	if !ok {
+		handleNotFound(response, request)
+		return
+	}
+
+	id, err := validateSessionID(sessionID)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+
+	switch {
+	case request.Method == http.MethodPost && action == "runs":
+		s.handleSessionRun(response, request, id)
+	case request.Method == http.MethodGet && action == "":
+		s.handleGetSession(response, request, id)
+	case request.Method == http.MethodDelete && action == "":
+		s.handleDeleteSession(response, request, id)
+	default:
+		sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "method not allowed"})
+	}
+}
+
+// parseSessionPath 从标准库 ServeMux 的 /sessions/ 前缀路由中解析 sessionId 和动作。
+// 第一版不允许 sessionId 含斜杠，避免 URL path 编码和路由边界变复杂。
+func parseSessionPath(path string) (string, string, bool) {
+	rest, ok := strings.CutPrefix(path, "/sessions/")
+	if !ok || rest == "" {
+		return "", "", false
+	}
+	if sessionID, ok := strings.CutSuffix(rest, "/runs"); ok {
+		if sessionID == "" || strings.Contains(sessionID, "/") {
+			return "", "", false
+		}
+		return sessionID, "runs", true
+	}
+	if strings.Contains(rest, "/") {
+		return "", "", false
+	}
+	return rest, "", true
+}
+
 // handleRun 同时处理 POST /runs 和兼容接口 POST /codex。
 func (s *Server) handleRun(response http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
@@ -179,6 +252,158 @@ func (s *Server) handleRun(response http.ResponseWriter, request *http.Request) 
 		status = http.StatusGatewayTimeout
 	}
 	sendJSON(response, status, formatRunResult(result, request.URL.Query().Get("debug") == "1"))
+}
+
+// handleSessionRun 执行一次持久化会话请求。
+// 它在单次无状态 runner 调用外层负责读取历史、拼接 prompt、写回 turn。
+func (s *Server) handleSessionRun(response http.ResponseWriter, request *http.Request, sessionID string) {
+	body, err := s.readJSONBody(request)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+
+	runner, err := s.selectRunner("/runs", body)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+
+	originalPrompt, err := ValidatePrompt(body)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+
+	cwd, err := ResolveWorkspaceCwd(body.Cwd, s.workspaceRoot)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+	body.Cwd = cwd
+
+	// 同一个 session 的历史读、runner 调用、结果写回必须串行，
+	// 否则并发请求会基于过期历史生成回复并乱序写入消息。
+	release, err := s.sessionLocks.acquire(request.Context(), sessionID)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+	defer release()
+
+	if err := s.ensureSessionMatches(request.Context(), sessionID, body.Agent, cwd); err != nil {
+		s.sendError(response, err)
+		return
+	}
+
+	// 只取成功消息作为上下文。失败和超时会保留在库里供审计，
+	// 但不会进入下一次 prompt，避免把错误输出当成正常对话历史。
+	messages, err := s.sessionStore.ListContextMessages(request.Context(), sessionID, s.sessionOptions.MaxTurns*2)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+	body.Prompt = buildSessionPrompt(messages, originalPrompt, s.sessionOptions.MaxHistoryBytes)
+
+	result, err := runner(request.Context(), body)
+	if err != nil {
+		// runner 返回执行错误时也记录这一轮，便于后续通过 GET /sessions/{id}
+		// 看见用户输入和失败原因；这类 failed turn 不参与后续上下文。
+		appendErr := s.sessionStore.AppendTurn(request.Context(), SessionTurn{
+			SessionID:        sessionID,
+			UserContent:      originalPrompt,
+			AssistantContent: errorMessage(err),
+			Status:           SessionStatusFailed,
+		})
+		if appendErr != nil {
+			s.sendError(response, appendErr)
+			return
+		}
+		s.sendError(response, err)
+		return
+	}
+
+	result.SessionID = sessionID
+	if err := s.sessionStore.AppendTurn(request.Context(), SessionTurn{
+		SessionID:        sessionID,
+		UserContent:      originalPrompt,
+		AssistantContent: sessionAssistantContent(result),
+		Status:           sessionStatusFromResult(result),
+	}); err != nil {
+		s.sendError(response, err)
+		return
+	}
+
+	status := http.StatusOK
+	if result.TimedOut {
+		status = http.StatusGatewayTimeout
+	}
+	sendJSON(response, status, formatRunResult(result, request.URL.Query().Get("debug") == "1"))
+}
+
+// ensureSessionMatches 创建新 session，或校验已存在 session 的 agent/cwd 绑定。
+// 一个长对话跨 agent 或跨 cwd 复用历史会让上下文和执行环境不一致。
+func (s *Server) ensureSessionMatches(ctx context.Context, sessionID string, agent string, cwd string) error {
+	session, ok, err := s.sessionStore.GetSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		_, err := s.sessionStore.CreateSession(ctx, SessionCreate{
+			ID:    sessionID,
+			Agent: agent,
+			Cwd:   cwd,
+		})
+		return err
+	}
+	if session.Agent != agent {
+		return NewRequestError("session already uses agent "+session.Agent, http.StatusBadRequest)
+	}
+	if session.Cwd != cwd {
+		return NewRequestError("session already uses cwd "+session.Cwd, http.StatusBadRequest)
+	}
+	return nil
+}
+
+// handleGetSession 返回 session 元信息和完整消息历史，用于查看和排查持久化状态。
+func (s *Server) handleGetSession(response http.ResponseWriter, request *http.Request, sessionID string) {
+	session, ok, err := s.sessionStore.GetSession(request.Context(), sessionID)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+	if !ok {
+		sendJSON(response, http.StatusNotFound, map[string]any{"ok": false, "error": "session not found"})
+		return
+	}
+
+	messages, err := s.sessionStore.ListMessages(request.Context(), sessionID)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+	sendJSON(response, http.StatusOK, map[string]any{
+		"ok":       true,
+		"session":  session,
+		"messages": messages,
+	})
+}
+
+// handleDeleteSession 删除 session 及其消息。
+// 删除时也获取 session 锁，避免和正在执行的同 session run 并发写删。
+func (s *Server) handleDeleteSession(response http.ResponseWriter, request *http.Request, sessionID string) {
+	release, err := s.sessionLocks.acquire(request.Context(), sessionID)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+	defer release()
+
+	if err := s.sessionStore.DeleteSession(request.Context(), sessionID); err != nil {
+		s.sendError(response, err)
+		return
+	}
+	sendJSON(response, http.StatusOK, map[string]any{"ok": true})
 }
 
 // selectRunner 将 /codex 固定映射到 codex runner，将 /runs 映射到请求中的 agent。
@@ -237,6 +462,9 @@ func (s *Server) readJSONBody(request *http.Request) (RunRequest, error) {
 // formatRunResult 默认隐藏原始 stdout/stderr；只有调用方显式传 debug=1 时才返回。
 func formatRunResult(result RunResult, includeDebug bool) map[string]any {
 	response := map[string]any{"ok": result.OK}
+	if result.SessionID != "" {
+		response["sessionId"] = result.SessionID
+	}
 	if result.Error != "" {
 		response["error"] = result.Error
 	}

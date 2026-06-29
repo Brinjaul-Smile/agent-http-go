@@ -13,25 +13,34 @@ import (
 )
 
 const (
-	defaultConfigPath = "config.yaml"
-	defaultHost       = "127.0.0.1"
-	defaultPort       = "8787"
-	defaultTimeout    = 10 * time.Minute
-	defaultMaxBody    = int64(1024 * 1024)
-	defaultWorkspace  = "."
-	defaultLogFormat  = "text"
+	defaultConfigPath             = "config.yaml"
+	defaultHost                   = "127.0.0.1"
+	defaultPort                   = "8787"
+	defaultTimeout                = 10 * time.Minute
+	defaultMaxBody                = int64(1024 * 1024)
+	defaultWorkspace              = "."
+	defaultLogFormat              = "text"
+	defaultSessionDriver          = "sqlite"
+	defaultSessionSQLitePath      = "./data/agent-http.db"
+	defaultSessionMaxTurns        = 20
+	defaultSessionMaxHistoryBytes = 64 * 1024
 )
 
 // Config 表示命令入口运行 HTTP 服务所需的配置。
 type Config struct {
-	Host          string
-	Port          string
-	LogRoutes     bool
-	MaxBodyBytes  int64
-	RunnerTimeout time.Duration
-	WorkspaceRoot string
-	LogLevel      slog.Level
-	LogFormat     string
+	Host                   string
+	Port                   string
+	LogRoutes              bool
+	MaxBodyBytes           int64
+	RunnerTimeout          time.Duration
+	WorkspaceRoot          string
+	LogLevel               slog.Level
+	LogFormat              string
+	SessionEnabled         bool
+	SessionDriver          string
+	SessionSQLitePath      string
+	SessionMaxTurns        int
+	SessionMaxHistoryBytes int
 }
 
 // ConfigOptions 控制配置文件路径和环境变量来源。
@@ -47,6 +56,7 @@ type configFile struct {
 	Runner    runnerConfig    `yaml:"runner"`
 	Workspace workspaceConfig `yaml:"workspace"`
 	Log       logConfig       `yaml:"log"`
+	Session   sessionConfig   `yaml:"session"`
 }
 
 // serverConfig 对应 YAML 中的 server 配置段。
@@ -73,16 +83,35 @@ type logConfig struct {
 	Format string `yaml:"format"`
 }
 
+// sessionConfig 对应 YAML 中的 session 配置段。
+type sessionConfig struct {
+	Enabled         *bool               `yaml:"enabled"`
+	Driver          string              `yaml:"driver"`
+	MaxTurns        int                 `yaml:"maxTurns"`
+	MaxHistorySize  string              `yaml:"maxHistorySize"`
+	MaxHistoryBytes string              `yaml:"maxHistoryBytes"`
+	SQLite          sessionSQLiteConfig `yaml:"sqlite"`
+}
+
+type sessionSQLiteConfig struct {
+	Path string `yaml:"path"`
+}
+
 // LoadConfig 按默认值、YAML 文件、环境变量的顺序加载运行配置。
 func LoadConfig(options ConfigOptions) (Config, error) {
 	config := Config{
-		Host:          defaultHost,
-		Port:          defaultPort,
-		MaxBodyBytes:  defaultMaxBody,
-		RunnerTimeout: defaultTimeout,
-		WorkspaceRoot: defaultWorkspace,
-		LogLevel:      slog.LevelInfo,
-		LogFormat:     defaultLogFormat,
+		Host:                   defaultHost,
+		Port:                   defaultPort,
+		MaxBodyBytes:           defaultMaxBody,
+		RunnerTimeout:          defaultTimeout,
+		WorkspaceRoot:          defaultWorkspace,
+		LogLevel:               slog.LevelInfo,
+		LogFormat:              defaultLogFormat,
+		SessionEnabled:         true,
+		SessionDriver:          defaultSessionDriver,
+		SessionSQLitePath:      defaultSessionSQLitePath,
+		SessionMaxTurns:        defaultSessionMaxTurns,
+		SessionMaxHistoryBytes: defaultSessionMaxHistoryBytes,
 	}
 
 	path := options.Path
@@ -131,6 +160,36 @@ func LoadConfig(options ConfigOptions) (Config, error) {
 			return Config{}, err
 		}
 		config.LogFormat = format
+	}
+	if fileConfig.Session.Enabled != nil {
+		config.SessionEnabled = *fileConfig.Session.Enabled
+	}
+	if fileConfig.Session.Driver != "" {
+		driver, err := parseSessionDriver(fileConfig.Session.Driver)
+		if err != nil {
+			return Config{}, err
+		}
+		config.SessionDriver = driver
+	}
+	if fileConfig.Session.SQLite.Path != "" {
+		config.SessionSQLitePath = fileConfig.Session.SQLite.Path
+	}
+	if fileConfig.Session.MaxTurns != 0 {
+		if fileConfig.Session.MaxTurns <= 0 {
+			return Config{}, fmt.Errorf("session maxTurns must be positive")
+		}
+		config.SessionMaxTurns = fileConfig.Session.MaxTurns
+	}
+	maxHistorySize := fileConfig.Session.MaxHistorySize
+	if maxHistorySize == "" {
+		maxHistorySize = fileConfig.Session.MaxHistoryBytes
+	}
+	if maxHistorySize != "" {
+		maxHistoryBytes, err := parseByteSize(maxHistorySize)
+		if err != nil {
+			return Config{}, err
+		}
+		config.SessionMaxHistoryBytes = int(maxHistoryBytes)
 	}
 
 	// 环境变量放在最后覆盖，部署时可以不改配置文件就临时调整监听地址。
@@ -207,6 +266,17 @@ func parseLogFormat(value string) (string, error) {
 		return format, nil
 	default:
 		return "", fmt.Errorf("invalid log format: %s", value)
+	}
+}
+
+// parseSessionDriver 校验持久会话存储驱动；当前实现 sqlite，接口保留 RDS 扩展空间。
+func parseSessionDriver(value string) (string, error) {
+	driver := strings.ToLower(strings.TrimSpace(value))
+	switch driver {
+	case "sqlite":
+		return driver, nil
+	default:
+		return "", fmt.Errorf("unsupported session driver: %s", value)
 	}
 }
 

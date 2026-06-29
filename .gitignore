@@ -24,6 +24,10 @@ output/
 manifest/output/
 temp/
 logs/
+data/
+*.db
+*.db-shm
+*.db-wal
 
 # Tool caches
 .cache/

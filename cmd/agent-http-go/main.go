@@ -36,13 +36,27 @@ func main() {
 }
 
 func serve(ctx context.Context, config Config, logger *slog.Logger) error {
+	sessionStore, err := newSessionStore(config)
+	if err != nil {
+		return err
+	}
+	if sessionStore != nil {
+		defer func() {
+			if err := sessionStore.Close(); err != nil {
+				logger.Error("failed to close session store", "error", err)
+			}
+		}()
+	}
+
 	handler := agenthttp.NewServer(agenthttp.ServerOptions{
-		WorkspaceRoot: config.WorkspaceRoot,
-		Env:           os.Environ(),
-		Timeout:       config.RunnerTimeout,
-		MaxBodyBytes:  config.MaxBodyBytes,
-		LogRoutes:     config.LogRoutes,
-		Logger:        logger,
+		WorkspaceRoot:  config.WorkspaceRoot,
+		Env:            os.Environ(),
+		Timeout:        config.RunnerTimeout,
+		MaxBodyBytes:   config.MaxBodyBytes,
+		LogRoutes:      config.LogRoutes,
+		Logger:         logger,
+		SessionStore:   sessionStore,
+		SessionOptions: agenthttp.SessionRunOptions{MaxTurns: config.SessionMaxTurns, MaxHistoryBytes: config.SessionMaxHistoryBytes},
 	})
 
 	// 使用标准库 slog 记录启动和异常退出，避免混用 fmt/log 输出。
@@ -52,6 +66,23 @@ func serve(ctx context.Context, config Config, logger *slog.Logger) error {
 		Handler: handler,
 	}
 	return runHTTPServer(ctx, server, logger, defaultShutdownTimeout)
+}
+
+type closeableSessionStore interface {
+	agenthttp.SessionStore
+	Close() error
+}
+
+func newSessionStore(config Config) (closeableSessionStore, error) {
+	if !config.SessionEnabled {
+		return nil, nil
+	}
+	switch config.SessionDriver {
+	case "sqlite":
+		return agenthttp.OpenSQLiteSessionStore(config.SessionSQLitePath)
+	default:
+		return nil, fmt.Errorf("unsupported session driver: %s", config.SessionDriver)
+	}
 }
 
 func runHTTPServer(ctx context.Context, server *http.Server, logger *slog.Logger, shutdownTimeout time.Duration) error {

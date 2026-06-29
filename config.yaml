@@ -13,3 +13,11 @@ workspace:
 log:
   level: info
   format: text
+
+session:
+  enabled: true
+  driver: sqlite
+  maxTurns: 20
+  maxHistorySize: 64KiB
+  sqlite:
+    path: ./data/agent-http.db

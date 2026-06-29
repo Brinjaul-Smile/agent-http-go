@@ -41,11 +41,26 @@ func TestLoadConfigUsesDefaultsWhenConfigFileIsMissing(t *testing.T) {
 	if config.LogFormat != "text" {
 		t.Fatalf("logFormat = %q, want text", config.LogFormat)
 	}
+	if !config.SessionEnabled {
+		t.Fatal("sessionEnabled = false, want true")
+	}
+	if config.SessionDriver != "sqlite" {
+		t.Fatalf("sessionDriver = %q, want sqlite", config.SessionDriver)
+	}
+	if config.SessionSQLitePath != "./data/agent-http.db" {
+		t.Fatalf("sessionSQLitePath = %q, want ./data/agent-http.db", config.SessionSQLitePath)
+	}
+	if config.SessionMaxTurns != 20 {
+		t.Fatalf("sessionMaxTurns = %d, want 20", config.SessionMaxTurns)
+	}
+	if config.SessionMaxHistoryBytes != 64*1024 {
+		t.Fatalf("sessionMaxHistoryBytes = %d, want 65536", config.SessionMaxHistoryBytes)
+	}
 }
 
 func TestLoadConfigReadsServerSettingsFromYAML(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(configPath, []byte("server:\n  host: 0.0.0.0\n  port: \"8080\"\n  logRoutes: true\n  maxBodySize: 2MiB\nrunner:\n  timeout: 2m30s\nworkspace:\n  root: ./workspace\nlog:\n  level: debug\n  format: json\n"), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte("server:\n  host: 0.0.0.0\n  port: \"8080\"\n  logRoutes: true\n  maxBodySize: 2MiB\nrunner:\n  timeout: 2m30s\nworkspace:\n  root: ./workspace\nlog:\n  level: debug\n  format: json\nsession:\n  enabled: false\n  driver: sqlite\n  maxTurns: 12\n  maxHistorySize: 32KiB\n  sqlite:\n    path: ./sessions.db\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -80,6 +95,21 @@ func TestLoadConfigReadsServerSettingsFromYAML(t *testing.T) {
 	}
 	if config.LogFormat != "json" {
 		t.Fatalf("logFormat = %q, want json", config.LogFormat)
+	}
+	if config.SessionEnabled {
+		t.Fatal("sessionEnabled = true, want false")
+	}
+	if config.SessionDriver != "sqlite" {
+		t.Fatalf("sessionDriver = %q, want sqlite", config.SessionDriver)
+	}
+	if config.SessionSQLitePath != "./sessions.db" {
+		t.Fatalf("sessionSQLitePath = %q, want ./sessions.db", config.SessionSQLitePath)
+	}
+	if config.SessionMaxTurns != 12 {
+		t.Fatalf("sessionMaxTurns = %d, want 12", config.SessionMaxTurns)
+	}
+	if config.SessionMaxHistoryBytes != 32*1024 {
+		t.Fatalf("sessionMaxHistoryBytes = %d, want 32768", config.SessionMaxHistoryBytes)
 	}
 }
 
@@ -131,6 +161,36 @@ func TestLoadConfigRejectsInvalidLogLevel(t *testing.T) {
 func TestLoadConfigRejectsInvalidLogFormat(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("log:\n  format: xml\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadConfig(ConfigOptions{
+		Path: configPath,
+		Env:  map[string]string{},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestLoadConfigRejectsUnsupportedSessionDriver(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("session:\n  driver: mysql\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadConfig(ConfigOptions{
+		Path: configPath,
+		Env:  map[string]string{},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestLoadConfigRejectsInvalidSessionMaxHistorySize(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("session:\n  maxHistorySize: huge\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
