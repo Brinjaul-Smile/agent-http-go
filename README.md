@@ -249,6 +249,52 @@ curl -sS -X POST http://127.0.0.1:8787/runs \
 }
 ```
 
+### `POST /runs/stream`
+
+通用 agent 调用的 SSE 推送接口，通过 `agent` 字段选择后端。
+
+请求示例：
+
+```sh
+curl -N -sS -X POST http://127.0.0.1:8787/runs/stream \
+  -H 'Content-Type: application/json' \
+  -d '{"agent":"codex","prompt":"Reply with exactly: pong"}'
+```
+
+响应类型：
+
+```http
+Content-Type: text/event-stream; charset=utf-8
+```
+
+事件示例：
+
+```text
+event: start
+data: {"ok":true}
+
+event: delta
+data: {"delta":"pong"}
+
+event: done
+data: {"exitCode":0,"ok":true}
+```
+
+如果执行阶段出错，会返回 `error` 事件：
+
+```text
+event: error
+data: {"ok":false,"error":"..."}
+
+event: done
+data: {"ok":false}
+```
+
+当前每个 agent 都有独立的流式适配：
+
+- `codex`：使用 `codex app-server --stdio` 的 experimental JSON-RPC 协议，转发 `item/agentMessage/delta` 通知为 SSE `delta`。最终 `turn/completed` 只用于生成运行结果，不会被伪装成 `delta`。
+- `claude`：使用 `claude --print --output-format stream-json --verbose --include-partial-messages` 读取实时 JSONL，并将 partial message 转成 SSE `delta`。
+
 ### `POST /codex`
 
 兼容接口，等价于 `POST /runs` 且 `agent` 固定为 `codex`。
@@ -257,6 +303,18 @@ curl -sS -X POST http://127.0.0.1:8787/runs \
 
 ```sh
 curl -sS -X POST http://127.0.0.1:8787/codex \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"Reply with exactly: pong"}'
+```
+
+### `POST /codex/stream`
+
+兼容 SSE 接口，等价于 `POST /runs/stream` 且 `agent` 固定为 `codex`。
+
+请求示例：
+
+```sh
+curl -N -sS -X POST http://127.0.0.1:8787/codex/stream \
   -H 'Content-Type: application/json' \
   -d '{"prompt":"Reply with exactly: pong"}'
 ```
@@ -304,6 +362,31 @@ curl -sS -X POST http://127.0.0.1:8787/sessions/chat-001/runs \
   "exitCode": 0,
   "output": "你叫张三。"
 }
+```
+
+### `POST /sessions/{sessionId}/runs/stream`
+
+持久化长对话的 SSE 推送接口。请求体、session 绑定规则、历史拼接规则和 `POST /sessions/{sessionId}/runs` 相同。
+
+请求示例：
+
+```sh
+curl -N -sS -X POST http://127.0.0.1:8787/sessions/chat-001/runs/stream \
+  -H 'Content-Type: application/json' \
+  -d '{"agent":"codex","prompt":"继续刚才的话题"}'
+```
+
+事件示例：
+
+```text
+event: start
+data: {"ok":true,"sessionId":"chat-001"}
+
+event: delta
+data: {"delta":"..."}
+
+event: done
+data: {"exitCode":0,"ok":true,"sessionId":"chat-001"}
 ```
 
 ### `GET /sessions/{sessionId}`
@@ -355,7 +438,7 @@ curl -sS -X DELETE http://127.0.0.1:8787/sessions/chat-001
 
 ### 调试输出
 
-`/runs`、`/codex` 和 `/sessions/{sessionId}/runs` 都支持 `debug=1`。开启后会额外返回原始 stdout 和 stderr。
+`/runs`、`/runs/stream`、`/codex`、`/codex/stream`、`/sessions/{sessionId}/runs` 和 `/sessions/{sessionId}/runs/stream` 都支持 `debug=1`。普通 JSON 接口开启后会额外返回原始 stdout 和 stderr；SSE 接口开启后会额外推送 `result` 事件，其中包含最终 `output`、原始 stdout 和 stderr。
 
 ```sh
 curl -sS -X POST 'http://127.0.0.1:8787/codex?debug=1' \
@@ -382,11 +465,14 @@ curl -sS -X POST 'http://127.0.0.1:8787/codex?debug=1' \
 - 请求体大小由 `server.maxBodySize` 控制，默认 `1MiB`。
 - 单次 agent 执行超时时间由 `runner.timeout` 控制，默认 `10m`。
 - 每个运行请求都会启动一个 CLI 子进程。
+- SSE 接口默认推送 `start`、`delta`、`done`、`error` 事件；`delta` 只来自 agent CLI 实际输出的正文增量事件。
+- `codex` 流式输出依赖 `codex app-server` 的 experimental 协议；如果当前 Codex CLI 版本未输出 `item/agentMessage/delta`，服务不会用最终结果做兜底假流式。
+- SSE 接口只有在 `debug=1` 时才会额外推送 `result` 事件，避免客户端把最终 `output` 追加到已流式展示的正文里。
 - 持久化会话使用 SQLite 本地文件；`session.enabled: false` 时不会注册 `/sessions/{sessionId}` 系列接口。
 - 持久化会话只保留并查询本地数据库中的历史，不维护常驻 CLI 进程。
 - 超时返回 HTTP `504`。
 - 未知路由返回 HTTP `404`。
-- 非 POST 方法调用 `/runs` 或 `/codex` 返回 HTTP `405`。
+- 非 POST 方法调用 `/runs`、`/runs/stream`、`/codex` 或 `/codex/stream` 返回 HTTP `405`。
 
 ## 测试
 

@@ -19,6 +19,7 @@ const MaxBodyBytes = 1024 * 1024
 // ServerOptions 配置 HTTP 服务，并允许测试注入假的 runner 或 agent 可用性检查。
 type ServerOptions struct {
 	Runners         map[string]Runner
+	StreamRunners   map[string]StreamRunner
 	GetAvailability func() ([]AgentStatus, error)
 	SessionStore    SessionStore
 	SessionOptions  SessionRunOptions
@@ -33,6 +34,7 @@ type ServerOptions struct {
 // Server 实现本地 Agent HTTP API。
 type Server struct {
 	runners         map[string]Runner
+	streamRunners   map[string]StreamRunner
 	runnerOrder     []string
 	getAvailability func() ([]AgentStatus, error)
 	sessionStore    SessionStore
@@ -52,6 +54,7 @@ func NewServer(options ServerOptions) *Server {
 	timeout := runnerTimeout(options.Timeout)
 
 	runners := options.Runners
+	streamRunners := options.StreamRunners
 	runnerOrder := make([]string, 0, len(runners))
 	if runners == nil {
 		runners = map[string]Runner{
@@ -70,12 +73,37 @@ func NewServer(options ServerOptions) *Server {
 				})
 			},
 		}
+		streamRunners = map[string]StreamRunner{
+			"codex": func(ctx context.Context, request RunRequest, writer StreamWriter) (RunResult, error) {
+				return RunCodexStreamContext(ctx, request, writer, RunnerOptions{
+					WorkspaceRoot: workspaceRoot,
+					Env:           env,
+					Timeout:       timeout,
+				})
+			},
+			"claude": func(ctx context.Context, request RunRequest, writer StreamWriter) (RunResult, error) {
+				return RunClaudeStreamContext(ctx, request, writer, RunnerOptions{
+					WorkspaceRoot: workspaceRoot,
+					Env:           env,
+					Timeout:       timeout,
+				})
+			},
+		}
 		runnerOrder = []string{"codex", "claude"}
 	} else {
 		for name := range runners {
 			runnerOrder = append(runnerOrder, name)
 		}
 		sort.Strings(runnerOrder)
+		if streamRunners == nil {
+			streamRunners = map[string]StreamRunner{}
+			for name, runner := range runners {
+				runner := runner
+				streamRunners[name] = func(ctx context.Context, request RunRequest, _ StreamWriter) (RunResult, error) {
+					return runner(ctx, request)
+				}
+			}
+		}
 	}
 
 	getAvailability := options.GetAvailability
@@ -87,6 +115,7 @@ func NewServer(options ServerOptions) *Server {
 
 	server := &Server{
 		runners:         runners,
+		streamRunners:   streamRunners,
 		runnerOrder:     runnerOrder,
 		getAvailability: getAvailability,
 		sessionStore:    options.SessionStore,
@@ -113,11 +142,14 @@ func (s *Server) routes() *http.ServeMux {
 	s.registerRoute(mux, http.MethodGet, "/health", "agenthttp.(*Server).handleHealth", s.handleHealth)
 	s.registerRoute(mux, http.MethodGet, "/agents", "agenthttp.(*Server).handleAgents", s.handleAgents)
 	s.registerRoute(mux, http.MethodPost, "/codex", "agenthttp.(*Server).handleRun", s.handleRun)
+	s.registerRoute(mux, http.MethodPost, "/codex/stream", "agenthttp.(*Server).handleRunStream", s.handleRunStream)
 	s.registerRoute(mux, http.MethodPost, "/runs", "agenthttp.(*Server).handleRun", s.handleRun)
+	s.registerRoute(mux, http.MethodPost, "/runs/stream", "agenthttp.(*Server).handleRunStream", s.handleRunStream)
 	if s.sessionStore != nil {
 		s.registerRoute(mux, http.MethodGet, "/sessions/{sessionId}", "agenthttp.(*Server).handleSession", s.handleSession)
 		s.logRegisteredRoute(http.MethodDelete, "/sessions/{sessionId}", "agenthttp.(*Server).handleSession")
 		s.logRegisteredRoute(http.MethodPost, "/sessions/{sessionId}/runs", "agenthttp.(*Server).handleSession")
+		s.logRegisteredRoute(http.MethodPost, "/sessions/{sessionId}/runs/stream", "agenthttp.(*Server).handleSession")
 	}
 	mux.HandleFunc("/", handleNotFound)
 	return mux
@@ -177,7 +209,8 @@ func handleNotFound(response http.ResponseWriter, _ *http.Request) {
 }
 
 // handleSession 分发持久化会话接口：
-// POST /sessions/{sessionId}/runs、GET /sessions/{sessionId}、DELETE /sessions/{sessionId}。
+// POST /sessions/{sessionId}/runs、POST /sessions/{sessionId}/runs/stream、
+// GET /sessions/{sessionId}、DELETE /sessions/{sessionId}。
 func (s *Server) handleSession(response http.ResponseWriter, request *http.Request) {
 	sessionID, action, ok := parseSessionPath(request.URL.Path)
 	if !ok {
@@ -192,6 +225,8 @@ func (s *Server) handleSession(response http.ResponseWriter, request *http.Reque
 	}
 
 	switch {
+	case request.Method == http.MethodPost && action == "runs_stream":
+		s.handleSessionRunStream(response, request, id)
 	case request.Method == http.MethodPost && action == "runs":
 		s.handleSessionRun(response, request, id)
 	case request.Method == http.MethodGet && action == "":
@@ -209,6 +244,12 @@ func parseSessionPath(path string) (string, string, bool) {
 	rest, ok := strings.CutPrefix(path, "/sessions/")
 	if !ok || rest == "" {
 		return "", "", false
+	}
+	if sessionID, ok := strings.CutSuffix(rest, "/runs/stream"); ok {
+		if sessionID == "" || strings.Contains(sessionID, "/") {
+			return "", "", false
+		}
+		return sessionID, "runs_stream", true
 	}
 	if sessionID, ok := strings.CutSuffix(rest, "/runs"); ok {
 		if sessionID == "" || strings.Contains(sessionID, "/") {
@@ -252,6 +293,49 @@ func (s *Server) handleRun(response http.ResponseWriter, request *http.Request) 
 		status = http.StatusGatewayTimeout
 	}
 	sendJSON(response, status, formatRunResult(result, request.URL.Query().Get("debug") == "1"))
+}
+
+// handleRunStream 处理无持久化历史的 SSE 运行接口。
+// StreamRunner 会把 CLI stdout 片段推成 delta；默认只用 done 返回最终状态。
+func (s *Server) handleRunStream(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "method not allowed"})
+		return
+	}
+
+	body, err := s.readJSONBody(request)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+
+	runnerPath := "/runs"
+	if request.URL.Path == "/codex/stream" {
+		runnerPath = "/codex"
+	}
+
+	runner, err := s.selectStreamRunner(runnerPath, body)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+
+	stream, ok := newSSEStream(response)
+	if !ok {
+		s.sendError(response, NewRequestError("streaming is not supported", http.StatusInternalServerError))
+		return
+	}
+	stream.send("start", map[string]any{"ok": true})
+
+	result, err := runner(request.Context(), body, stream)
+	if err != nil {
+		stream.send("error", map[string]any{"ok": false, "error": errorMessage(err)})
+		stream.send("done", map[string]any{"ok": false})
+		return
+	}
+
+	sendStreamResultIfDebug(stream, result, request.URL.Query().Get("debug") == "1")
+	stream.send("done", formatStreamDone(result))
 }
 
 // handleSessionRun 执行一次持久化会话请求。
@@ -341,6 +425,94 @@ func (s *Server) handleSessionRun(response http.ResponseWriter, request *http.Re
 	sendJSON(response, status, formatRunResult(result, request.URL.Query().Get("debug") == "1"))
 }
 
+// handleSessionRunStream 执行一次持久化会话 SSE 请求。
+// 它和同步 session run 共享同样的历史拼接与写回规则，只是响应改为事件流。
+func (s *Server) handleSessionRunStream(response http.ResponseWriter, request *http.Request, sessionID string) {
+	body, err := s.readJSONBody(request)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+
+	runner, err := s.selectStreamRunner("/runs", body)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+
+	originalPrompt, err := ValidatePrompt(body)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+
+	cwd, err := ResolveWorkspaceCwd(body.Cwd, s.workspaceRoot)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+	body.Cwd = cwd
+
+	release, err := s.sessionLocks.acquire(request.Context(), sessionID)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+	defer release()
+
+	if err := s.ensureSessionMatches(request.Context(), sessionID, body.Agent, cwd); err != nil {
+		s.sendError(response, err)
+		return
+	}
+
+	messages, err := s.sessionStore.ListContextMessages(request.Context(), sessionID, s.sessionOptions.MaxTurns*2)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+	body.Prompt = buildSessionPrompt(messages, originalPrompt, s.sessionOptions.MaxHistoryBytes)
+
+	stream, ok := newSSEStream(response)
+	if !ok {
+		s.sendError(response, NewRequestError("streaming is not supported", http.StatusInternalServerError))
+		return
+	}
+	stream.send("start", map[string]any{"ok": true, "sessionId": sessionID})
+
+	result, err := runner(request.Context(), body, stream)
+	if err != nil {
+		appendErr := s.sessionStore.AppendTurn(request.Context(), SessionTurn{
+			SessionID:        sessionID,
+			UserContent:      originalPrompt,
+			AssistantContent: errorMessage(err),
+			Status:           SessionStatusFailed,
+		})
+		if appendErr != nil {
+			stream.send("error", map[string]any{"ok": false, "error": errorMessage(appendErr)})
+			stream.send("done", map[string]any{"ok": false, "sessionId": sessionID})
+			return
+		}
+		stream.send("error", map[string]any{"ok": false, "sessionId": sessionID, "error": errorMessage(err)})
+		stream.send("done", map[string]any{"ok": false, "sessionId": sessionID})
+		return
+	}
+
+	result.SessionID = sessionID
+	if err := s.sessionStore.AppendTurn(request.Context(), SessionTurn{
+		SessionID:        sessionID,
+		UserContent:      originalPrompt,
+		AssistantContent: sessionAssistantContent(result),
+		Status:           sessionStatusFromResult(result),
+	}); err != nil {
+		stream.send("error", map[string]any{"ok": false, "sessionId": sessionID, "error": errorMessage(err)})
+		stream.send("done", map[string]any{"ok": false, "sessionId": sessionID})
+		return
+	}
+
+	sendStreamResultIfDebug(stream, result, request.URL.Query().Get("debug") == "1")
+	stream.send("done", formatStreamDone(result))
+}
+
 // ensureSessionMatches 创建新 session，或校验已存在 session 的 agent/cwd 绑定。
 // 一个长对话跨 agent 或跨 cwd 复用历史会让上下文和执行环境不一致。
 func (s *Server) ensureSessionMatches(ctx context.Context, sessionID string, agent string, cwd string) error {
@@ -423,6 +595,24 @@ func (s *Server) selectRunner(path string, body RunRequest) (Runner, error) {
 	return runner, nil
 }
 
+// selectStreamRunner 将流式接口映射到对应 stream runner。
+// /codex/stream 固定使用 codex；/runs/stream 使用请求体中的 agent。
+func (s *Server) selectStreamRunner(path string, body RunRequest) (StreamRunner, error) {
+	if path == "/codex" {
+		runner, ok := s.streamRunners["codex"]
+		if !ok {
+			return nil, NewRequestError("agent must be one of: "+strings.Join(s.runnerNames(), ", "), http.StatusBadRequest)
+		}
+		return runner, nil
+	}
+
+	runner, ok := s.streamRunners[body.Agent]
+	if !ok {
+		return nil, NewRequestError("agent must be one of: "+strings.Join(s.runnerNames(), ", "), http.StatusBadRequest)
+	}
+	return runner, nil
+}
+
 // runnerNames 返回当前服务支持的 runner 名称，用于生成错误提示。
 func (s *Server) runnerNames() []string {
 	names := append([]string(nil), s.runnerOrder...)
@@ -486,6 +676,30 @@ func formatRunResult(result RunResult, includeDebug bool) map[string]any {
 	return response
 }
 
+func sendStreamResultIfDebug(stream *sseStream, result RunResult, includeDebug bool) {
+	if !includeDebug {
+		return
+	}
+	stream.send("result", formatRunResult(result, true))
+}
+
+func formatStreamDone(result RunResult) map[string]any {
+	response := map[string]any{"ok": result.OK}
+	if result.SessionID != "" {
+		response["sessionId"] = result.SessionID
+	}
+	if result.Error != "" {
+		response["error"] = result.Error
+	}
+	if result.ExitCode != nil {
+		response["exitCode"] = *result.ExitCode
+	}
+	if result.TimedOut {
+		response["timedOut"] = true
+	}
+	return response
+}
+
 // sendJSON 写出统一的 JSON 响应头和响应体。
 func sendJSON(response http.ResponseWriter, statusCode int, body any) {
 	payload, err := json.Marshal(body)
@@ -498,6 +712,51 @@ func sendJSON(response http.ResponseWriter, statusCode int, body any) {
 	response.Header().Set("Content-Length", strconv.Itoa(len(payload)))
 	response.WriteHeader(statusCode)
 	_, _ = response.Write(payload)
+}
+
+type sseStream struct {
+	response http.ResponseWriter
+	flusher  http.Flusher
+}
+
+// newSSEStream 初始化 Server-Sent Events 响应头。
+// SSE 仍基于 HTTP，适合服务端单向推送 start/delta/done 这类 chat 事件。
+func newSSEStream(response http.ResponseWriter) (*sseStream, bool) {
+	flusher, ok := response.(http.Flusher)
+	if !ok {
+		return nil, false
+	}
+
+	header := response.Header()
+	header.Set("Content-Type", "text/event-stream; charset=utf-8")
+	header.Set("Cache-Control", "no-cache")
+	header.Set("Connection", "keep-alive")
+	header.Set("X-Accel-Buffering", "no")
+	response.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	return &sseStream{response: response, flusher: flusher}, true
+}
+
+// send 写出一个 SSE 事件。data 使用 JSON，方便客户端按事件类型解析结构化载荷。
+func (s *sseStream) send(event string, data any) {
+	payload, err := json.Marshal(data)
+	if err != nil {
+		payload = []byte(`{"ok":false,"error":"internal server error"}`)
+	}
+
+	_, _ = s.response.Write([]byte("event: " + event + "\n"))
+	for _, line := range strings.Split(string(payload), "\n") {
+		_, _ = s.response.Write([]byte("data: " + line + "\n"))
+	}
+	_, _ = s.response.Write([]byte("\n"))
+	s.flusher.Flush()
+}
+
+// WriteDelta 实现 StreamWriter，把 runner stdout 片段转成 SSE delta 事件。
+func (s *sseStream) WriteDelta(delta string) error {
+	s.send("delta", map[string]any{"delta": delta})
+	return nil
 }
 
 // errorMessage 返回非空错误文案，避免给调用方返回空字符串。

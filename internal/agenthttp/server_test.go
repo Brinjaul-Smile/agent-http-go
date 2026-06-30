@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -151,6 +152,153 @@ func TestPOSTRunsDispatchesToRequestedRunner(t *testing.T) {
 	})
 }
 
+func TestPOSTRunsStreamReturnsSSEEvents(t *testing.T) {
+	server := NewServer(ServerOptions{
+		Runners: map[string]Runner{
+			"codex": func(context.Context, RunRequest) (RunResult, error) {
+				return RunResult{}, errors.New("sync runner should not be called")
+			},
+		},
+		StreamRunners: map[string]StreamRunner{
+			"codex": func(_ context.Context, request RunRequest, writer StreamWriter) (RunResult, error) {
+				if err := writer.WriteDelta("chunk-1:"); err != nil {
+					return RunResult{}, err
+				}
+				if err := writer.WriteDelta(request.Prompt); err != nil {
+					return RunResult{}, err
+				}
+				exitCode := 0
+				return RunResult{OK: true, ExitCode: &exitCode, Output: "streamed:" + request.Prompt}, nil
+			},
+		},
+	})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/runs/stream", jsonBody(t, map[string]any{
+		"agent":  "codex",
+		"prompt": "hello",
+	}))
+	server.ServeHTTP(response, request)
+
+	assertStatus(t, response, http.StatusOK)
+	if contentType := response.Header().Get("Content-Type"); contentType != "text/event-stream; charset=utf-8" {
+		t.Fatalf("content-type = %q, want text/event-stream", contentType)
+	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		"event: start\n",
+		"event: delta\n",
+		`"delta":"chunk-1:"`,
+		`"delta":"hello"`,
+		"event: done\n",
+		`"exitCode":0`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("SSE body missing %q in:\n%s", expected, body)
+		}
+	}
+	for _, unexpected := range []string{
+		"event: result\n",
+		`"output":"streamed:hello"`,
+	} {
+		if strings.Contains(body, unexpected) {
+			t.Fatalf("SSE body unexpectedly contains %q in:\n%s", unexpected, body)
+		}
+	}
+}
+
+func TestPOSTRunStreamDebugIncludesResult(t *testing.T) {
+	server := NewServer(ServerOptions{
+		Runners: map[string]Runner{
+			"codex": func(context.Context, RunRequest) (RunResult, error) {
+				return RunResult{}, errors.New("sync runner should not be called")
+			},
+		},
+		StreamRunners: map[string]StreamRunner{
+			"codex": func(_ context.Context, request RunRequest, writer StreamWriter) (RunResult, error) {
+				if err := writer.WriteDelta(request.Prompt); err != nil {
+					return RunResult{}, err
+				}
+				exitCode := 0
+				return RunResult{
+					OK:       true,
+					ExitCode: &exitCode,
+					Output:   "streamed:" + request.Prompt,
+					Stdout:   "raw stdout",
+					Stderr:   "raw stderr",
+				}, nil
+			},
+		},
+	})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/runs/stream?debug=1", jsonBody(t, map[string]any{
+		"agent":  "codex",
+		"prompt": "hello",
+	}))
+	server.ServeHTTP(response, request)
+
+	assertStatus(t, response, http.StatusOK)
+	body := response.Body.String()
+	for _, expected := range []string{
+		"event: result\n",
+		`"output":"streamed:hello"`,
+		`"stdout":"raw stdout"`,
+		`"stderr":"raw stderr"`,
+		"event: done\n",
+		`"exitCode":0`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("SSE body missing %q in:\n%s", expected, body)
+		}
+	}
+}
+
+func TestPOSTCodexStreamUsesCodexRunner(t *testing.T) {
+	server := NewServer(ServerOptions{
+		Runners: map[string]Runner{
+			"codex": func(context.Context, RunRequest) (RunResult, error) {
+				return RunResult{}, errors.New("sync runner should not be called")
+			},
+			"claude": func(context.Context, RunRequest) (RunResult, error) {
+				return RunResult{}, errors.New("claude runner should not be called")
+			},
+		},
+		StreamRunners: map[string]StreamRunner{
+			"codex": func(_ context.Context, request RunRequest, writer StreamWriter) (RunResult, error) {
+				if err := writer.WriteDelta("codex:"); err != nil {
+					return RunResult{}, err
+				}
+				exitCode := 0
+				return RunResult{OK: true, ExitCode: &exitCode, Output: "codex-streamed:" + request.Prompt}, nil
+			},
+		},
+	})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/codex/stream", jsonBody(t, map[string]any{
+		"prompt": "hello",
+	}))
+	server.ServeHTTP(response, request)
+
+	assertStatus(t, response, http.StatusOK)
+	body := response.Body.String()
+	for _, expected := range []string{
+		"event: start\n",
+		"event: delta\n",
+		`"delta":"codex:"`,
+		"event: done\n",
+		`"exitCode":0`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("SSE body missing %q in:\n%s", expected, body)
+		}
+	}
+	if strings.Contains(body, "event: result\n") {
+		t.Fatalf("SSE body unexpectedly contains result event:\n%s", body)
+	}
+}
+
 func TestPOSTSessionRunKeepsSuccessfulConversationHistory(t *testing.T) {
 	workspaceRoot := t.TempDir()
 	store := newMemorySessionStore()
@@ -216,6 +364,91 @@ func TestPOSTSessionRunKeepsSuccessfulConversationHistory(t *testing.T) {
 		if !strings.Contains(prompts[1], expected) {
 			t.Fatalf("second prompt missing %q in:\n%s", expected, prompts[1])
 		}
+	}
+}
+
+func TestPOSTSessionRunStreamKeepsHistoryAndWritesSession(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	store := newMemorySessionStore()
+	var prompts []string
+	server := NewServer(ServerOptions{
+		WorkspaceRoot: workspaceRoot,
+		SessionStore:  store,
+		Runners: map[string]Runner{
+			"codex": func(context.Context, RunRequest) (RunResult, error) {
+				return RunResult{}, errors.New("sync runner should not be called")
+			},
+		},
+		StreamRunners: map[string]StreamRunner{
+			"codex": func(_ context.Context, request RunRequest, writer StreamWriter) (RunResult, error) {
+				prompts = append(prompts, request.Prompt)
+				if err := writer.WriteDelta("delta-" + strconv.Itoa(len(prompts))); err != nil {
+					return RunResult{}, err
+				}
+				output := "answer-1"
+				if len(prompts) == 2 {
+					output = "answer-2"
+				}
+				exitCode := 0
+				return RunResult{OK: true, ExitCode: &exitCode, Output: output}, nil
+			},
+		},
+	})
+
+	firstResponse := httptest.NewRecorder()
+	firstRequest := httptest.NewRequest(http.MethodPost, "/sessions/chat-1/runs/stream", jsonBody(t, map[string]any{
+		"agent":  "codex",
+		"prompt": "hello",
+	}))
+	server.ServeHTTP(firstResponse, firstRequest)
+
+	assertStatus(t, firstResponse, http.StatusOK)
+	if !strings.Contains(firstResponse.Body.String(), `"sessionId":"chat-1"`) {
+		t.Fatalf("first SSE body missing sessionId:\n%s", firstResponse.Body.String())
+	}
+
+	secondResponse := httptest.NewRecorder()
+	secondRequest := httptest.NewRequest(http.MethodPost, "/sessions/chat-1/runs/stream", jsonBody(t, map[string]any{
+		"agent":  "codex",
+		"prompt": "what next?",
+	}))
+	server.ServeHTTP(secondResponse, secondRequest)
+
+	assertStatus(t, secondResponse, http.StatusOK)
+	body := secondResponse.Body.String()
+	for _, expected := range []string{
+		"event: start\n",
+		"event: delta\n",
+		`"delta":"delta-2"`,
+		"event: done\n",
+		`"exitCode":0`,
+		`"sessionId":"chat-1"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("second SSE body missing %q in:\n%s", expected, body)
+		}
+	}
+	for _, unexpected := range []string{
+		"event: result\n",
+		`"output":"answer-2"`,
+	} {
+		if strings.Contains(body, unexpected) {
+			t.Fatalf("second SSE body unexpectedly contains %q in:\n%s", unexpected, body)
+		}
+	}
+	if len(prompts) != 2 {
+		t.Fatalf("prompts len = %d, want 2", len(prompts))
+	}
+	if !strings.Contains(prompts[1], "User:\nhello") || !strings.Contains(prompts[1], "Latest user message:\nwhat next?") {
+		t.Fatalf("second prompt did not include history:\n%s", prompts[1])
+	}
+
+	messages, err := store.ListMessages(context.Background(), "chat-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 4 {
+		t.Fatalf("messages len = %d, want 4", len(messages))
 	}
 }
 
