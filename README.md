@@ -212,7 +212,7 @@ session:
 
 ### `GET /agents`
 
-检查常见 agent CLI 是否存在于服务进程的 `PATH` 中，并返回当前服务是否支持通过 `/runs` 调用该 agent。
+检查当前支持的 agent CLI 是否存在于服务进程的 `PATH` 中，并返回是否可通过 `/runs` 调用。
 
 响应示例：
 

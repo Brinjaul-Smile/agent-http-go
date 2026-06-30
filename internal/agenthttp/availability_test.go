@@ -8,12 +8,11 @@ import (
 func TestGetAgentAvailabilityReportsInstalledAndSupportedKnownAgents(t *testing.T) {
 	binDir := t.TempDir()
 	writeFakeCommand(t, binDir, "codex", "#!/bin/sh\n")
-	writeFakeCommand(t, binDir, "gemini", "#!/bin/sh\n")
+	writeFakeCommand(t, binDir, "claude", "#!/bin/sh\n")
 
 	agents, err := GetAgentAvailability([]AgentConfig{
 		{Name: "codex", Command: "codex", Supported: true},
-		{Name: "gemini", Command: "gemini", Supported: false},
-		{Name: "opencode", Command: "opencode", Supported: false},
+		{Name: "claude", Command: "claude", Supported: true},
 	}, []string{"PATH=" + binDir})
 	if err != nil {
 		t.Fatal(err)
@@ -21,8 +20,7 @@ func TestGetAgentAvailabilityReportsInstalledAndSupportedKnownAgents(t *testing.
 
 	want := []AgentStatus{
 		{Name: "codex", Command: "codex", Available: true, Supported: true},
-		{Name: "gemini", Command: "gemini", Available: true, Supported: false},
-		{Name: "opencode", Command: "opencode", Available: false, Supported: false, Error: "opencode CLI not found in PATH"},
+		{Name: "claude", Command: "claude", Available: true, Supported: true},
 	}
 
 	if len(agents) != len(want) {
@@ -35,21 +33,19 @@ func TestGetAgentAvailabilityReportsInstalledAndSupportedKnownAgents(t *testing.
 	}
 }
 
-func TestDefaultKnownAgentsIncludesPiCodingAgent(t *testing.T) {
-	found := false
-	for _, agent := range DefaultKnownAgents() {
-		if agent.Name == "pi" {
-			found = true
-			if agent.Command != "pi" {
-				t.Fatalf("command = %q, want pi", agent.Command)
-			}
-			if agent.Supported {
-				t.Fatal("pi supported = true, want false")
-			}
-		}
+func TestDefaultKnownAgentsOnlyIncludesSupportedRunners(t *testing.T) {
+	agents := DefaultKnownAgents()
+	want := []AgentConfig{
+		{Name: "codex", Command: "codex", Supported: true},
+		{Name: "claude", Command: "claude", Supported: true},
 	}
-	if !found {
-		t.Fatal("pi agent not found")
+	if len(agents) != len(want) {
+		t.Fatalf("len = %d, want %d", len(agents), len(want))
+	}
+	for i := range agents {
+		if agents[i] != want[i] {
+			t.Fatalf("agents[%d] = %#v, want %#v", i, agents[i], want[i])
+		}
 	}
 }
 

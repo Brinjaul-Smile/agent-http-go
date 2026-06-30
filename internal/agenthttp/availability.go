@@ -27,15 +27,6 @@ func DefaultKnownAgents() []AgentConfig {
 	return []AgentConfig{
 		{Name: "codex", Command: "codex", Supported: true},
 		{Name: "claude", Command: "claude", Supported: true},
-		{Name: "gemini", Command: "gemini", Supported: false},
-		{Name: "opencode", Command: "opencode", Supported: false},
-		{Name: "pi", Command: "pi", Supported: false},
-		{Name: "cursor-agent", Command: "cursor-agent", Supported: false},
-		{Name: "aider", Command: "aider", Supported: false},
-		{Name: "amp", Command: "amp", Supported: false},
-		{Name: "auggie", Command: "auggie", Supported: false},
-		{Name: "goose", Command: "goose", Supported: false},
-		{Name: "qwen", Command: "qwen", Supported: false},
 	}
 }
 
