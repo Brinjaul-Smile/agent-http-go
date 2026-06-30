@@ -72,9 +72,17 @@ func (w *jsonLineStreamWriter) writeLine(line string) error {
 }
 
 // claudeJSONLDeltaParser 从 Claude stream-json 行中提取正文增量。
+//
+// Claude stream-json 会交错发出两类事件：
+//  1. content_block_delta：携带 delta.text，是逐字流出的纯增量（或偶尔累计快照）；
+//  2. type=assistant 消息快照：携带完整的 message.content[].text。
+//
+// 两路事件都需要去重。核心原则：维护同一个 lastEmittedText，记录已向客户端
+// 发送的累计文本总量；无论哪路事件发出的文本都更新它，确保两路互不重放。
 type claudeJSONLDeltaParser struct {
-	// lastAssistantText 记录已转发文本，用于去重累计快照。
-	lastAssistantText string
+	// lastEmittedText 记录已向下游发出的正文累计值。
+	// delta 路和快照路都读写同一个字段，保证彼此不重发已经推送过的内容。
+	lastEmittedText string
 }
 
 // newClaudeJSONLDeltaParser 创建 Claude stream-json delta 解析器。
@@ -92,11 +100,12 @@ func (p *claudeJSONLDeltaParser) Deltas(line string) []string {
 		return nil
 	}
 
+	// content_block_delta 路：提取 delta 字段，与 lastEmittedText 做归一化去重。
 	if deltas := extractExplicitDeltas(payload); len(deltas) > 0 {
 		normalized := make([]string, 0, len(deltas))
 		for _, delta := range deltas {
-			nextDelta, nextText := normalizeTextDelta(p.lastAssistantText, delta)
-			p.lastAssistantText = nextText
+			nextDelta, nextText := normalizeTextDelta(p.lastEmittedText, delta)
+			p.lastEmittedText = nextText
 			if nextDelta != "" {
 				normalized = append(normalized, nextDelta)
 			}
@@ -104,6 +113,8 @@ func (p *claudeJSONLDeltaParser) Deltas(line string) []string {
 		return normalized
 	}
 
+	// type=assistant 快照路：提取完整消息文本，与 lastEmittedText 做前缀去重。
+	// 此时 lastEmittedText 已包含 delta 路已发送的内容，因此快照里已发送的部分会被正确跳过。
 	root, ok := payload.(map[string]any)
 	if !ok {
 		return nil
@@ -113,15 +124,23 @@ func (p *claudeJSONLDeltaParser) Deltas(line string) []string {
 	}
 
 	text := collectClaudeAssistantText(root["message"])
-	if text == "" || text == p.lastAssistantText {
+	if text == "" || text == p.lastEmittedText {
 		return nil
 	}
-	if strings.HasPrefix(text, p.lastAssistantText) {
-		delta := strings.TrimPrefix(text, p.lastAssistantText)
-		p.lastAssistantText = text
+	if strings.HasPrefix(text, p.lastEmittedText) {
+		delta := strings.TrimPrefix(text, p.lastEmittedText)
+		p.lastEmittedText = text
 		return []string{delta}
 	}
-	p.lastAssistantText = text
+	// 快照内容与已发送文本无前缀关系，分两种情况处理：
+	if len(text) <= len(p.lastEmittedText) {
+		// 快照落后于 delta（旧快照姗姗来迟），静默丢弃，保持状态不变。
+		// 若此处更新 lastEmittedText 会导致状态倒退，破坏后续去重逻辑。
+		return nil
+	}
+	// 快照内容与已发送文本完全不同（极端异常：内容被截断重置）。
+	// 将整个快照作为新增量发出，并重置已发送状态。
+	p.lastEmittedText = text
 	return []string{text}
 }
 

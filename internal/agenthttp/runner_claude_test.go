@@ -135,6 +135,91 @@ func TestClaudeJSONLDeltaParserConvertsCumulativeExplicitDeltaToSuffix(t *testin
 	}
 }
 
+// TestClaudeJSONLDeltaParserSnapshotArrivesBeforeDeltas 验证：快照先于 delta 到达时，
+// 快照内容正常发出；随后到来的 delta 不会重复发送快照已有的内容。
+func TestClaudeJSONLDeltaParserSnapshotArrivesBeforeDeltas(t *testing.T) {
+	parser := newClaudeJSONLDeltaParser()
+
+	lines := []string{
+		// 快照先到，包含完整文本
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"你好"}]}}`,
+		// delta 路接着发来同样的内容（此时快照已更新 lastEmittedText，delta 应被过滤）
+		`{"type":"content_block_delta","delta":{"type":"text_delta","text":"你好"}}`,
+		// 快照再次更新，追加新内容
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"你好世界"}]}}`,
+	}
+
+	var deltas []string
+	for _, line := range lines {
+		deltas = append(deltas, parser.Deltas(line)...)
+	}
+
+	if got := strings.Join(deltas, ""); got != "你好世界" {
+		t.Fatalf("deltas = %#v, joined = %q, want 你好世界", deltas, got)
+	}
+}
+
+// TestClaudeJSONLDeltaParserSnapshotExtendsAlreadySentDeltas 验证：已通过 delta 路发出
+// 部分文本后，快照带来更多内容时，只追加新增部分。
+func TestClaudeJSONLDeltaParserSnapshotExtendsAlreadySentDeltas(t *testing.T) {
+	parser := newClaudeJSONLDeltaParser()
+
+	lines := []string{
+		`{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}`,
+		`{"type":"content_block_delta","delta":{"type":"text_delta","text":", "}}`,
+		// 快照包含前两个 delta 已发送的内容，外加新增的 "world!"
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"Hello, world!"}]}}`,
+	}
+
+	var deltas []string
+	for _, line := range lines {
+		deltas = append(deltas, parser.Deltas(line)...)
+	}
+
+	if got := strings.Join(deltas, ""); got != "Hello, world!" {
+		t.Fatalf("deltas joined = %q, want \"Hello, world!\"", got)
+	}
+	// 应该是 "Hello" + ", " + "world!" 三段，不含重复全量
+	if len(deltas) != 3 {
+		t.Fatalf("deltas = %#v, want 3 segments (Hello / ,  / world!)", deltas)
+	}
+	if deltas[2] != "world!" {
+		t.Fatalf("third delta = %q, want \"world!\"", deltas[2])
+	}
+}
+
+// TestClaudeJSONLDeltaParserStaleSnapshotIsDiscarded 验证：delta 已推进后，
+// 姗姗来迟的旧快照（text 比 lastEmittedText 短）应被静默丢弃，
+// 不更新 lastEmittedText，不向下游重发任何内容。
+func TestClaudeJSONLDeltaParserStaleSnapshotIsDiscarded(t *testing.T) {
+	parser := newClaudeJSONLDeltaParser()
+
+	lines := []string{
+		`{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}`,
+		`{"type":"content_block_delta","delta":{"type":"text_delta","text":", world"}}`,
+		// 旧快照姗姗来迟，只包含第一个 delta 的内容（比 lastEmittedText 短）
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"}]}}`,
+		// 正常快照，包含完整内容加新增
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"Hello, world!"}]}}`,
+	}
+
+	var deltas []string
+	for _, line := range lines {
+		deltas = append(deltas, parser.Deltas(line)...)
+	}
+
+	if got := strings.Join(deltas, ""); got != "Hello, world!" {
+		t.Fatalf("deltas joined = %q, want \"Hello, world!\"", got)
+	}
+	// 旧快照被丢弃，不产生额外 delta；最终应为 Hello / ", world" / "!" 三段
+	if len(deltas) != 3 {
+		t.Fatalf("deltas = %#v, want 3 segments", deltas)
+	}
+	if deltas[2] != "!" {
+		t.Fatalf("third delta = %q, want \"!\"", deltas[2])
+	}
+}
+
 func TestRunClaudeReportsClearErrorWhenClaudeIsNotInPath(t *testing.T) {
 	workspaceRoot := t.TempDir()
 
