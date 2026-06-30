@@ -65,3 +65,17 @@ func TestFindExecutableReturnsExecutablePath(t *testing.T) {
 		t.Fatalf("path = %q", path)
 	}
 }
+
+func TestFindExecutableAcceptsAbsolutePath(t *testing.T) {
+	binDir := t.TempDir()
+	commandPath := filepath.Join(binDir, "codex")
+	writeFakeCommand(t, binDir, "codex", "#!/bin/sh\n")
+
+	path, err := FindExecutable(commandPath, []string{"PATH="})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != commandPath {
+		t.Fatalf("path = %q", path)
+	}
+}

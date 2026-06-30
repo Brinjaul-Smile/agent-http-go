@@ -47,11 +47,19 @@ func serve(ctx context.Context, config Config, logger *slog.Logger) error {
 			}
 		}()
 	}
+	codexAppServerOptions := agenthttp.CodexAppServerOptions{
+		ApprovalPolicy: config.CodexApprovalPolicy,
+		Sandbox:        config.CodexSandbox,
+		Ephemeral:      &config.CodexEphemeral,
+	}
 
 	handler := agenthttp.NewServer(agenthttp.ServerOptions{
 		WorkspaceRoot:  config.WorkspaceRoot,
 		Env:            os.Environ(),
 		Timeout:        config.RunnerTimeout,
+		CodexCommand:   config.CodexCommand,
+		ClaudeCommand:  config.ClaudeCommand,
+		CodexAppServer: codexAppServerOptions,
 		MaxBodyBytes:   config.MaxBodyBytes,
 		LogRoutes:      config.LogRoutes,
 		Logger:         logger,
@@ -65,7 +73,7 @@ func serve(ctx context.Context, config Config, logger *slog.Logger) error {
 		Addr:    addr,
 		Handler: handler,
 	}
-	return runHTTPServer(ctx, server, logger, defaultShutdownTimeout)
+	return runHTTPServer(ctx, server, logger, config.ShutdownTimeout)
 }
 
 type closeableSessionStore interface {

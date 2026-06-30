@@ -57,6 +57,16 @@ type RunnerOptions struct {
 	WorkspaceRoot string
 	Env           []string
 	Timeout       time.Duration
+	CodexCommand  string
+	ClaudeCommand string
+	CodexAppServerOptions
+}
+
+// CodexAppServerOptions 控制 codex app-server thread/start 的运行策略。
+type CodexAppServerOptions struct {
+	ApprovalPolicy string
+	Sandbox        string
+	Ephemeral      *bool
 }
 
 // ValidatePrompt 校验所有 runner 共享的 prompt 非空规则。
@@ -114,7 +124,7 @@ func RunCodexContext(ctx context.Context, body RunRequest, options RunnerOptions
 		return RunResult{}, err
 	}
 
-	path, err := FindExecutable("codex", env)
+	path, err := FindExecutable(runnerCommand(options.CodexCommand, "codex"), env)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -201,7 +211,7 @@ func RunCodexStreamContext(ctx context.Context, body RunRequest, writer StreamWr
 		return RunResult{}, err
 	}
 
-	path, err := FindExecutable("codex", env)
+	path, err := FindExecutable(runnerCommand(options.CodexCommand, "codex"), env)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -214,7 +224,7 @@ func RunCodexStreamContext(ctx context.Context, body RunRequest, writer StreamWr
 		Args: []string{"app-server", "--stdio"},
 		Cwd:  cwd,
 		Env:  env,
-	}, writer, cwd, absoluteWorkspaceRoot)
+	}, writer, cwd, absoluteWorkspaceRoot, normalizedCodexAppServerOptions(options.CodexAppServerOptions))
 
 	return codexAppServerRunResult(appResult)
 }
@@ -240,7 +250,7 @@ func RunClaudeContext(ctx context.Context, body RunRequest, options RunnerOption
 		return RunResult{}, err
 	}
 
-	path, err := FindExecutable("claude", env)
+	path, err := FindExecutable(runnerCommand(options.ClaudeCommand, "claude"), env)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -315,7 +325,7 @@ func RunClaudeStreamContext(ctx context.Context, body RunRequest, writer StreamW
 		return RunResult{}, err
 	}
 
-	path, err := FindExecutable("claude", env)
+	path, err := FindExecutable(runnerCommand(options.ClaudeCommand, "claude"), env)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -773,7 +783,7 @@ type appServerItem struct {
 	Text string `json:"text"`
 }
 
-func runCodexAppServerStream(ctx context.Context, prompt string, timeout time.Duration, spec execCommandSpec, writer StreamWriter, cwd string, workspaceRoot string) codexAppServerRun {
+func runCodexAppServerStream(ctx context.Context, prompt string, timeout time.Duration, spec execCommandSpec, writer StreamWriter, cwd string, workspaceRoot string, appOptions CodexAppServerOptions) codexAppServerRun {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -905,7 +915,7 @@ func runCodexAppServerStream(ctx context.Context, prompt string, timeout time.Du
 				_ = stopProcessGroup(cmd, waitCh)
 				return finishCodexAppServerRun(result, cmd, waitCh, stderrDone, &stdoutMu, &stdout, &stderr, nil)
 			}
-			if err := handleCodexAppServerLine(line.line, writer, sendRequest, sendResponseError, prompt, cwd, workspaceRoot, &threadID, &turnID, deltaTracker, &result); err != nil {
+			if err := handleCodexAppServerLine(line.line, writer, sendRequest, sendResponseError, prompt, cwd, workspaceRoot, appOptions, &threadID, &turnID, deltaTracker, &result); err != nil {
 				result.Err = err
 				_ = stopProcessGroup(cmd, waitCh)
 				return finishCodexAppServerRun(result, cmd, waitCh, stderrDone, &stdoutMu, &stdout, &stderr, nil)
@@ -921,7 +931,7 @@ func runCodexAppServerStream(ctx context.Context, prompt string, timeout time.Du
 					}
 					continue
 				}
-				if handleErr := handleCodexAppServerLine(line.line, writer, sendRequest, sendResponseError, prompt, cwd, workspaceRoot, &threadID, &turnID, deltaTracker, &result); handleErr != nil && result.Err == nil {
+				if handleErr := handleCodexAppServerLine(line.line, writer, sendRequest, sendResponseError, prompt, cwd, workspaceRoot, appOptions, &threadID, &turnID, deltaTracker, &result); handleErr != nil && result.Err == nil {
 					result.Err = handleErr
 				}
 			}
@@ -938,7 +948,7 @@ func runCodexAppServerStream(ctx context.Context, prompt string, timeout time.Du
 	}
 }
 
-func handleCodexAppServerLine(line string, writer StreamWriter, sendRequest func(int, string, any) error, sendResponseError func(any, int, string) error, prompt string, cwd string, workspaceRoot string, threadID *string, turnID *string, deltaTracker *appServerDeltaTracker, result *codexAppServerRun) error {
+func handleCodexAppServerLine(line string, writer StreamWriter, sendRequest func(int, string, any) error, sendResponseError func(any, int, string) error, prompt string, cwd string, workspaceRoot string, appOptions CodexAppServerOptions, threadID *string, turnID *string, deltaTracker *appServerDeltaTracker, result *codexAppServerRun) error {
 	var message appServerMessage
 	if err := json.Unmarshal([]byte(line), &message); err != nil {
 		return nil
@@ -957,9 +967,9 @@ func handleCodexAppServerLine(line string, writer StreamWriter, sendRequest func
 			return sendRequest(2, "thread/start", map[string]any{
 				"cwd":                   cwd,
 				"runtimeWorkspaceRoots": []string{workspaceRoot},
-				"approvalPolicy":        "never",
-				"sandbox":               "workspace-write",
-				"ephemeral":             true,
+				"approvalPolicy":        appOptions.ApprovalPolicy,
+				"sandbox":               appOptions.Sandbox,
+				"ephemeral":             codexAppServerEphemeral(appOptions),
 			})
 		case 2:
 			var payload appServerThreadStartResult
@@ -1372,6 +1382,31 @@ func runnerTimeout(timeout time.Duration) time.Duration {
 		return timeout
 	}
 	return DefaultTimeout
+}
+
+func runnerCommand(command string, fallback string) string {
+	trimmed := strings.TrimSpace(command)
+	if trimmed != "" {
+		return trimmed
+	}
+	return fallback
+}
+
+func normalizedCodexAppServerOptions(options CodexAppServerOptions) CodexAppServerOptions {
+	if strings.TrimSpace(options.ApprovalPolicy) == "" {
+		options.ApprovalPolicy = "never"
+	}
+	if strings.TrimSpace(options.Sandbox) == "" {
+		options.Sandbox = "workspace-write"
+	}
+	return options
+}
+
+func codexAppServerEphemeral(options CodexAppServerOptions) bool {
+	if options.Ephemeral == nil {
+		return true
+	}
+	return *options.Ephemeral
 }
 
 // intString 将退出码转换成响应错误文案需要的字符串。

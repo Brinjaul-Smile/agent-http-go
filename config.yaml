@@ -1,23 +1,58 @@
+# HTTP 服务配置。
 server:
+  # 监听地址。部署时可用 HOST 环境变量覆盖。
   host: 127.0.0.1
+  # 监听端口。部署时可用 PORT 环境变量覆盖；建议保留字符串，避免 YAML 数字解析差异。
   port: "8787"
+  # 收到中断信号后等待 HTTP 服务优雅关闭的最长时间，使用 Go duration 格式。
+  shutdownTimeout: 10s
+  # JSON 请求体最大大小，支持 B、KiB、MiB、GiB 或裸字节数。
   maxBodySize: 1MiB
+  # 是否在启动时输出所有注册路由。
   logRoutes: false
 
+# Agent 子进程执行配置。
 runner:
+  # 单次 agent CLI 调用的整体超时，使用 Go duration 格式。
   timeout: 10m
+  # Codex CLI 配置。
+  codex:
+    # Codex 命令名或可执行文件绝对路径。
+    command: codex
+    # 传给 codex app-server thread/start 的 approvalPolicy。
+    approvalPolicy: never
+    # 传给 codex app-server thread/start 的 sandbox。
+    sandbox: workspace-write
+    # 传给 codex app-server thread/start 的 ephemeral。
+    ephemeral: true
+  # Claude CLI 配置。
+  claude:
+    # Claude 命令名或可执行文件绝对路径。
+    command: claude
 
+# 工作区边界配置。
 workspace:
+  # agent 请求中的 cwd 必须位于该目录内部。
   root: "."
 
+# 日志配置。
 log:
+  # 日志级别：debug、info、warn、error。
   level: info
+  # 日志格式：text 或 json。
   format: text
 
+# 持久会话配置。
 session:
+  # 是否启用 /sessions 系列接口的持久会话能力。
   enabled: true
+  # 会话存储驱动；当前仅支持 sqlite。
   driver: sqlite
+  # 每次 session run 最多取多少轮成功历史拼进 prompt。
   maxTurns: 20
+  # 注入 prompt 的历史内容最大字节数，支持 B、KiB、MiB、GiB 或裸字节数。
   maxHistorySize: 64KiB
+  # SQLite 会话存储配置。
   sqlite:
+    # SQLite 数据库文件路径。
     path: ./data/agent-http.db

@@ -43,11 +43,19 @@ http://127.0.0.1:8787
 server:
   host: 127.0.0.1
   port: "8787"
+  shutdownTimeout: 10s
   maxBodySize: 1MiB
   logRoutes: false
 
 runner:
   timeout: 10m
+  codex:
+    command: codex
+    approvalPolicy: never
+    sandbox: workspace-write
+    ephemeral: true
+  claude:
+    command: claude
 
 workspace:
   root: "."
@@ -98,6 +106,24 @@ HOST=0.0.0.0 PORT=8080 go run ./cmd/agent-http-go
 - `30s`
 - `10m`
 - `1h`
+
+### Agent CLI 配置
+
+`runner.codex.command` 和 `runner.claude.command` 控制服务查找的 CLI 命令名，默认分别是 `codex` 和 `claude`。如果 CLI 不在 `PATH` 中，可以配置成绝对路径或 wrapper 脚本名。
+
+`runner.codex.approvalPolicy`、`runner.codex.sandbox` 和 `runner.codex.ephemeral` 会传给 `codex app-server --stdio` 的 `thread/start` 请求，默认保持当前服务行为：
+
+```yaml
+runner:
+  codex:
+    approvalPolicy: never
+    sandbox: workspace-write
+    ephemeral: true
+```
+
+### 关闭超时
+
+`server.shutdownTimeout` 控制收到中断信号后的优雅关闭等待时间，默认是 `10s`。
 
 ### 请求体大小
 

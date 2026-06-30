@@ -26,6 +26,9 @@ type ServerOptions struct {
 	WorkspaceRoot   string
 	Env             []string
 	Timeout         time.Duration
+	CodexCommand    string
+	ClaudeCommand   string
+	CodexAppServer  CodexAppServerOptions
 	MaxBodyBytes    int64
 	LogRoutes       bool
 	Logger          *slog.Logger
@@ -63,6 +66,7 @@ func NewServer(options ServerOptions) *Server {
 					WorkspaceRoot: workspaceRoot,
 					Env:           env,
 					Timeout:       timeout,
+					CodexCommand:  options.CodexCommand,
 				})
 			},
 			"claude": func(ctx context.Context, request RunRequest) (RunResult, error) {
@@ -70,15 +74,18 @@ func NewServer(options ServerOptions) *Server {
 					WorkspaceRoot: workspaceRoot,
 					Env:           env,
 					Timeout:       timeout,
+					ClaudeCommand: options.ClaudeCommand,
 				})
 			},
 		}
 		streamRunners = map[string]StreamRunner{
 			"codex": func(ctx context.Context, request RunRequest, writer StreamWriter) (RunResult, error) {
 				return RunCodexStreamContext(ctx, request, writer, RunnerOptions{
-					WorkspaceRoot: workspaceRoot,
-					Env:           env,
-					Timeout:       timeout,
+					WorkspaceRoot:         workspaceRoot,
+					Env:                   env,
+					Timeout:               timeout,
+					CodexCommand:          options.CodexCommand,
+					CodexAppServerOptions: options.CodexAppServer,
 				})
 			},
 			"claude": func(ctx context.Context, request RunRequest, writer StreamWriter) (RunResult, error) {
@@ -86,6 +93,7 @@ func NewServer(options ServerOptions) *Server {
 					WorkspaceRoot: workspaceRoot,
 					Env:           env,
 					Timeout:       timeout,
+					ClaudeCommand: options.ClaudeCommand,
 				})
 			},
 		}

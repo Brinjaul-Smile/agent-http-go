@@ -24,21 +24,44 @@ const (
 	defaultSessionSQLitePath      = "./data/agent-http.db"
 	defaultSessionMaxTurns        = 20
 	defaultSessionMaxHistoryBytes = 64 * 1024
+	defaultCodexCommand           = "codex"
+	defaultClaudeCommand          = "claude"
+	defaultCodexApprovalPolicy    = "never"
+	defaultCodexSandbox           = "workspace-write"
+	defaultCodexEphemeral         = true
 )
 
 // Config 表示命令入口运行 HTTP 服务所需的配置。
 type Config struct {
-	Host                   string
-	Port                   string
-	LogRoutes              bool
-	MaxBodyBytes           int64
-	RunnerTimeout          time.Duration
-	WorkspaceRoot          string
-	LogLevel               slog.Level
-	LogFormat              string
-	SessionEnabled         bool
-	SessionDriver          string
-	SessionSQLitePath      string
+	// Host 和 Port 控制 HTTP 服务监听地址；部署时可被 HOST/PORT 环境变量覆盖。
+	Host string
+	Port string
+	// ShutdownTimeout 控制收到中断信号后等待 HTTP 服务优雅关闭的最长时间。
+	ShutdownTimeout time.Duration
+	// LogRoutes 控制启动时是否把注册路由写入日志。
+	LogRoutes bool
+	// MaxBodyBytes 限制 JSON 请求体大小，避免过大的 prompt 或调试载荷占用内存。
+	MaxBodyBytes int64
+	// RunnerTimeout 控制单次 agent CLI 子进程允许运行的最长时间。
+	RunnerTimeout time.Duration
+	// CodexCommand 和 ClaudeCommand 控制服务查找或执行的 agent CLI 命令。
+	CodexCommand  string
+	ClaudeCommand string
+	// CodexApprovalPolicy、CodexSandbox 和 CodexEphemeral 透传给 codex app-server 的 thread/start。
+	CodexApprovalPolicy string
+	CodexSandbox        string
+	CodexEphemeral      bool
+	// WorkspaceRoot 限定请求 cwd 的边界，避免 agent 在工作区外执行。
+	WorkspaceRoot string
+	// LogLevel 和 LogFormat 控制 slog 输出级别和 text/json 格式。
+	LogLevel  slog.Level
+	LogFormat string
+	// SessionEnabled 控制是否启用持久会话；SessionDriver 当前只支持 sqlite。
+	SessionEnabled bool
+	SessionDriver  string
+	// SessionSQLitePath 是 sqlite 会话库文件路径。
+	SessionSQLitePath string
+	// SessionMaxTurns 和 SessionMaxHistoryBytes 控制注入 runner prompt 的历史窗口。
 	SessionMaxTurns        int
 	SessionMaxHistoryBytes int
 }
@@ -46,8 +69,10 @@ type Config struct {
 // ConfigOptions 控制配置文件路径和环境变量来源。
 // Env 可注入，测试时不用修改真实进程环境也能验证环境变量覆盖逻辑。
 type ConfigOptions struct {
+	// Path 为空时使用默认配置文件 config.yaml；文件不存在时继续使用默认配置。
 	Path string
-	Env  map[string]string
+	// Env 为 nil 时读取真实进程环境；非 nil 时只使用传入的键值覆盖。
+	Env map[string]string
 }
 
 // configFile 对应 YAML 文件的顶层结构。
@@ -61,39 +86,73 @@ type configFile struct {
 
 // serverConfig 对应 YAML 中的 server 配置段。
 type serverConfig struct {
-	Host        string `yaml:"host"`
-	Port        string `yaml:"port"`
-	LogRoutes   bool   `yaml:"logRoutes"`
+	// host/port 控制 HTTP 服务监听地址。
+	Host string `yaml:"host"`
+	Port string `yaml:"port"`
+	// shutdownTimeout 使用 Go duration 格式，例如 10s、1m。
+	ShutdownTimeout string `yaml:"shutdownTimeout"`
+	// logRoutes 为 true 时启动阶段会输出所有注册路由。
+	LogRoutes bool `yaml:"logRoutes"`
+	// maxBodySize 支持 B、KiB、MiB、GiB 或裸字节数。
 	MaxBodySize string `yaml:"maxBodySize"`
 }
 
 // runnerConfig 对应 YAML 中的 runner 配置段。
 type runnerConfig struct {
-	Timeout string `yaml:"timeout"`
+	// timeout 控制一次 agent CLI 调用的整体超时。
+	Timeout string            `yaml:"timeout"`
+	Codex   codexRunnerConfig `yaml:"codex"`
+	Claude  commandConfig     `yaml:"claude"`
+}
+
+// codexRunnerConfig 对应 YAML 中的 runner.codex 配置段。
+type codexRunnerConfig struct {
+	// command 可以是 PATH 中的命令名，也可以是可执行文件绝对路径。
+	Command string `yaml:"command"`
+	// approvalPolicy、sandbox 和 ephemeral 原样传给 codex app-server 的 thread/start。
+	ApprovalPolicy string `yaml:"approvalPolicy"`
+	Sandbox        string `yaml:"sandbox"`
+	// Ephemeral 使用指针区分“未配置”和显式配置 false。
+	Ephemeral *bool `yaml:"ephemeral"`
+}
+
+// commandConfig 表示只需要配置 CLI 命令名的 agent 配置段。
+type commandConfig struct {
+	// command 可以是 PATH 中的命令名，也可以是可执行文件绝对路径。
+	Command string `yaml:"command"`
 }
 
 // workspaceConfig 对应 YAML 中的 workspace 配置段。
 type workspaceConfig struct {
+	// root 是服务允许 agent 使用的工作区根目录。
 	Root string `yaml:"root"`
 }
 
 // logConfig 对应 YAML 中的 log 配置段。
 type logConfig struct {
-	Level  string `yaml:"level"`
+	// level 支持 debug、info、warn、error。
+	Level string `yaml:"level"`
+	// format 支持 text 和 json。
 	Format string `yaml:"format"`
 }
 
 // sessionConfig 对应 YAML 中的 session 配置段。
 type sessionConfig struct {
-	Enabled         *bool               `yaml:"enabled"`
-	Driver          string              `yaml:"driver"`
-	MaxTurns        int                 `yaml:"maxTurns"`
+	// Enabled 使用指针区分“未配置”和显式关闭 false。
+	Enabled *bool `yaml:"enabled"`
+	// Driver 当前只支持 sqlite。
+	Driver string `yaml:"driver"`
+	// MaxTurns 控制最多取多少轮成功历史拼进下一次 prompt。
+	MaxTurns int `yaml:"maxTurns"`
+	// MaxHistorySize 是推荐字段；MaxHistoryBytes 保留兼容旧配置。
 	MaxHistorySize  string              `yaml:"maxHistorySize"`
 	MaxHistoryBytes string              `yaml:"maxHistoryBytes"`
 	SQLite          sessionSQLiteConfig `yaml:"sqlite"`
 }
 
+// sessionSQLiteConfig 对应 YAML 中的 session.sqlite 配置段。
 type sessionSQLiteConfig struct {
+	// path 是 sqlite 数据库文件路径。
 	Path string `yaml:"path"`
 }
 
@@ -102,8 +161,14 @@ func LoadConfig(options ConfigOptions) (Config, error) {
 	config := Config{
 		Host:                   defaultHost,
 		Port:                   defaultPort,
+		ShutdownTimeout:        defaultShutdownTimeout,
 		MaxBodyBytes:           defaultMaxBody,
 		RunnerTimeout:          defaultTimeout,
+		CodexCommand:           defaultCodexCommand,
+		ClaudeCommand:          defaultClaudeCommand,
+		CodexApprovalPolicy:    defaultCodexApprovalPolicy,
+		CodexSandbox:           defaultCodexSandbox,
+		CodexEphemeral:         defaultCodexEphemeral,
 		WorkspaceRoot:          defaultWorkspace,
 		LogLevel:               slog.LevelInfo,
 		LogFormat:              defaultLogFormat,
@@ -129,6 +194,13 @@ func LoadConfig(options ConfigOptions) (Config, error) {
 	if fileConfig.Server.Port != "" {
 		config.Port = fileConfig.Server.Port
 	}
+	if fileConfig.Server.ShutdownTimeout != "" {
+		timeout, err := time.ParseDuration(fileConfig.Server.ShutdownTimeout)
+		if err != nil {
+			return Config{}, err
+		}
+		config.ShutdownTimeout = timeout
+	}
 	config.LogRoutes = fileConfig.Server.LogRoutes
 	if fileConfig.Server.MaxBodySize != "" {
 		maxBodyBytes, err := parseByteSize(fileConfig.Server.MaxBodySize)
@@ -143,6 +215,21 @@ func LoadConfig(options ConfigOptions) (Config, error) {
 			return Config{}, err
 		}
 		config.RunnerTimeout = timeout
+	}
+	if fileConfig.Runner.Codex.Command != "" {
+		config.CodexCommand = fileConfig.Runner.Codex.Command
+	}
+	if fileConfig.Runner.Codex.ApprovalPolicy != "" {
+		config.CodexApprovalPolicy = fileConfig.Runner.Codex.ApprovalPolicy
+	}
+	if fileConfig.Runner.Codex.Sandbox != "" {
+		config.CodexSandbox = fileConfig.Runner.Codex.Sandbox
+	}
+	if fileConfig.Runner.Codex.Ephemeral != nil {
+		config.CodexEphemeral = *fileConfig.Runner.Codex.Ephemeral
+	}
+	if fileConfig.Runner.Claude.Command != "" {
+		config.ClaudeCommand = fileConfig.Runner.Claude.Command
 	}
 	if fileConfig.Workspace.Root != "" {
 		config.WorkspaceRoot = fileConfig.Workspace.Root

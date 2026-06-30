@@ -67,21 +67,36 @@ func GetAgentAvailability(agents []AgentConfig, env []string) ([]AgentStatus, er
 
 // FindExecutable 在传入的环境变量 PATH 中查找可执行命令。
 func FindExecutable(command string, env []string) (string, error) {
-	for _, directory := range pathDirectories(env) {
-		candidate := filepath.Join(directory, command)
-		info, err := os.Stat(candidate)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
+	if filepath.IsAbs(command) {
+		if isExecutable, err := isExecutableFile(command); err != nil || !isExecutable {
 			return "", err
 		}
-		if !info.IsDir() && info.Mode()&0o111 != 0 {
+		return command, nil
+	}
+
+	for _, directory := range pathDirectories(env) {
+		candidate := filepath.Join(directory, command)
+		isExecutable, err := isExecutableFile(candidate)
+		if err != nil {
+			return "", err
+		}
+		if isExecutable {
 			return candidate, nil
 		}
 	}
 
 	return "", nil
+}
+
+func isExecutableFile(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return !info.IsDir() && info.Mode()&0o111 != 0, nil
 }
 
 // pathDirectories 从环境变量中解析 PATH 目录列表。

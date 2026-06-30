@@ -140,6 +140,33 @@ func TestRunCodexStreamUsesAppServerDeltasAndCompletedTurnOutput(t *testing.T) {
 	}
 }
 
+func TestRunCodexStreamUsesConfiguredAppServerOptions(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	binDir := t.TempDir()
+	writeFakeCommand(t, binDir, "custom-codex", fakeCodexAppServerOptionsScript())
+
+	ephemeral := false
+	writer := &collectStreamWriter{}
+	result, err := RunCodexStreamContext(context.Background(), RunRequest{Prompt: "hello", Cwd: workspaceRoot}, writer, RunnerOptions{
+		WorkspaceRoot: workspaceRoot,
+		Env:           envWithPath(binDir),
+		Timeout:       5 * time.Second,
+		CodexCommand:  "custom-codex",
+		CodexAppServerOptions: CodexAppServerOptions{
+			ApprovalPolicy: "on-request",
+			Sandbox:        "read-only",
+			Ephemeral:      &ephemeral,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !result.OK {
+		t.Fatalf("ok = false, error = %q, stderr = %q", result.Error, result.Stderr)
+	}
+}
+
 func TestRunCodexStreamSendsAbsoluteWorkspaceRoots(t *testing.T) {
 	binDir := t.TempDir()
 	writeFakeCommand(t, binDir, "codex", fakeCodexAppServerAbsolutePathScript())
@@ -194,7 +221,7 @@ func TestCodexAppServerDeltaTrackerConvertsCumulativeDeltaToSuffix(t *testing.T)
 		`{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"抱歉，查询天气需要发起网络请求"}}`,
 	}
 	for _, line := range lines {
-		if err := handleCodexAppServerLine(line, writer, sendRequest, sendResponseError, "", "", "", &threadID, &turnID, tracker, &result); err != nil {
+		if err := handleCodexAppServerLine(line, writer, sendRequest, sendResponseError, "", "", "", CodexAppServerOptions{}, &threadID, &turnID, tracker, &result); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -237,6 +264,7 @@ func TestCodexAppServerRespondsToUnsupportedServerRequest(t *testing.T) {
 		"",
 		"",
 		"",
+		CodexAppServerOptions{},
 		&threadID,
 		&turnID,
 		tracker,
@@ -576,6 +604,30 @@ printf '{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","tur
 printf '{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"hello"}}\n'
 printf '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","items":[{"type":"agentMessage","id":"item-1","text":"final:hello"}],"itemsView":"full","status":"completed","error":null,"startedAt":1,"completedAt":2,"durationMs":1}}}\n'
 printf 'stderr text' >&2
+`
+}
+
+func fakeCodexAppServerOptionsScript() string {
+	return `#!/bin/sh
+IFS= read -r initialize
+printf '{"id":1,"result":{"userAgent":"fake","codexHome":"/tmp","platformFamily":"unix","platformOs":"linux"}}\n'
+IFS= read -r thread_start
+if ! printf '%s' "$thread_start" | grep -q '"approvalPolicy":"on-request"'; then
+  printf 'thread/start did not include configured approvalPolicy: %s' "$thread_start" >&2
+  exit 8
+fi
+if ! printf '%s' "$thread_start" | grep -q '"sandbox":"read-only"'; then
+  printf 'thread/start did not include configured sandbox: %s' "$thread_start" >&2
+  exit 9
+fi
+if ! printf '%s' "$thread_start" | grep -q '"ephemeral":false'; then
+  printf 'thread/start did not include configured ephemeral: %s' "$thread_start" >&2
+  exit 10
+fi
+printf '{"id":2,"result":{"thread":{"id":"thread-1"}}}\n'
+IFS= read -r turn_start
+printf '{"id":3,"result":{"turn":{"id":"turn-1"}}}\n'
+printf '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","items":[{"type":"agentMessage","id":"item-1","text":"final"}],"itemsView":"full","status":"completed","error":null,"startedAt":1,"completedAt":2,"durationMs":1}}}\n'
 `
 }
 
