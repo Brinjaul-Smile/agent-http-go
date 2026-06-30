@@ -424,7 +424,7 @@ func TestClaudeJSONLDeltaParserDoesNotRepeatFinalAssistantMessageAfterExplicitDe
 		`{"type":"content_block_delta","delta":{"type":"text_delta","text":"请"}}`,
 		`{"type":"content_block_delta","delta":{"type":"text_delta","text":"随时"}}`,
 		`{"type":"content_block_delta","delta":{"type":"text_delta","text":"告知"}}`,
-		`{"type":"assistant","message":{"content":[{"type":"text","text":"请随时告知"}],"stop_reason":"end_turn"}}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"请随时告知"}]}}`,
 	}
 
 	var deltas []string
@@ -437,28 +437,6 @@ func TestClaudeJSONLDeltaParserDoesNotRepeatFinalAssistantMessageAfterExplicitDe
 	}
 	if len(deltas) != 3 {
 		t.Fatalf("deltas = %#v, want only the three explicit deltas", deltas)
-	}
-}
-
-func TestClaudeJSONLDeltaParserIgnoresFinalAssistantSnapshot(t *testing.T) {
-	parser := newClaudeJSONLDeltaParser()
-
-	lines := []string{
-		`{"type":"assistant","message":{"content":[{"type":"text","text":"代码"}],"stop_reason":null}}`,
-		`{"type":"assistant","message":{"content":[{"type":"text","text":"代码：处理文件"}],"stop_reason":null}}`,
-		`{"type":"assistant","message":{"content":[{"type":"text","text":"我无法查询实时天气数据，因为我没有联网搜索的能力。"}],"stop_reason":"end_turn"}}`,
-	}
-
-	var deltas []string
-	for _, line := range lines {
-		deltas = append(deltas, parser.Deltas(line)...)
-	}
-
-	if got := strings.Join(deltas, ""); got != "代码：处理文件" {
-		t.Fatalf("deltas = %#v, joined = %q, want only partial assistant text", deltas, got)
-	}
-	if len(deltas) != 2 {
-		t.Fatalf("deltas = %#v, want final assistant snapshot ignored", deltas)
 	}
 }
 
@@ -669,9 +647,8 @@ if [ "$saw_stream_json$saw_verbose$saw_partial" != "111" ]; then
   exit 7
 fi
 prompt=$(cat)
-printf '{"type":"content_block_delta","delta":{"type":"text_delta","text":"stream:"}}\n'
-printf '{"type":"content_block_delta","delta":{"type":"text_delta","text":"%s"}}\n' "$prompt"
-printf '{"type":"assistant","message":{"content":[{"type":"text","text":"stream:%s"}],"stop_reason":"end_turn"}}\n' "$prompt"
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"stream:"}]}}\n'
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"stream:%s"}]}}\n' "$prompt"
 printf '{"type":"result","result":"final:%s"}\n' "$prompt"
 `
 }

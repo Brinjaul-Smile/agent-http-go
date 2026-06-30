@@ -1172,12 +1172,12 @@ func (p *claudeJSONLDeltaParser) Deltas(line string) []string {
 	if line == "" {
 		return nil
 	}
-	var root map[string]any
-	if err := json.Unmarshal([]byte(line), &root); err != nil {
+	var payload any
+	if err := json.Unmarshal([]byte(line), &payload); err != nil {
 		return nil
 	}
 
-	if deltas := extractClaudeTextDeltas(root); len(deltas) > 0 {
+	if deltas := extractExplicitDeltas(payload); len(deltas) > 0 {
 		normalized := make([]string, 0, len(deltas))
 		for _, delta := range deltas {
 			nextDelta, nextText := normalizeTextDelta(p.lastAssistantText, delta)
@@ -1189,10 +1189,11 @@ func (p *claudeJSONLDeltaParser) Deltas(line string) []string {
 		return normalized
 	}
 
-	if eventType, _ := root["type"].(string); eventType != "assistant" {
+	root, ok := payload.(map[string]any)
+	if !ok {
 		return nil
 	}
-	if p.lastAssistantText != "" && claudeAssistantMessageIsFinal(root["message"]) {
+	if eventType, _ := root["type"].(string); eventType != "assistant" {
 		return nil
 	}
 
@@ -1205,11 +1206,8 @@ func (p *claudeJSONLDeltaParser) Deltas(line string) []string {
 		p.lastAssistantText = text
 		return []string{delta}
 	}
-	if p.lastAssistantText == "" {
-		p.lastAssistantText = text
-		return []string{text}
-	}
-	return nil
+	p.lastAssistantText = text
+	return []string{text}
 }
 
 func normalizeTextDelta(previous string, incoming string) (string, string) {
@@ -1228,24 +1226,22 @@ func normalizeTextDelta(previous string, incoming string) (string, string) {
 	return incoming, previous + incoming
 }
 
-func extractClaudeTextDeltas(root map[string]any) []string {
-	eventType, _ := root["type"].(string)
-	if eventType != "content_block_delta" {
-		return nil
-	}
-	delta, ok := root["delta"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	deltaType, _ := delta["type"].(string)
-	if deltaType != "text_delta" {
-		return nil
-	}
-	text, _ := delta["text"].(string)
-	if text == "" {
-		return nil
-	}
-	return []string{text}
+func extractExplicitDeltas(value any) []string {
+	var deltas []string
+	walkJSON(value, func(key string, current any) {
+		if key != "delta" {
+			return
+		}
+		switch typed := current.(type) {
+		case string:
+			deltas = append(deltas, typed)
+		case map[string]any:
+			if text, ok := typed["text"].(string); ok {
+				deltas = append(deltas, text)
+			}
+		}
+	})
+	return deltas
 }
 
 func collectClaudeAssistantText(value any) string {
@@ -1271,13 +1267,18 @@ func collectClaudeAssistantText(value any) string {
 	return builder.String()
 }
 
-func claudeAssistantMessageIsFinal(value any) bool {
-	message, ok := value.(map[string]any)
-	if !ok {
-		return false
+func walkJSON(value any, visit func(string, any)) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			visit(key, child)
+			walkJSON(child, visit)
+		}
+	case []any:
+		for _, child := range typed {
+			walkJSON(child, visit)
+		}
 	}
-	stopReason, ok := message["stop_reason"]
-	return ok && stopReason != nil
 }
 
 func copyStreamOutput(reader io.Reader, stdout *bytes.Buffer, writer StreamWriter) error {
