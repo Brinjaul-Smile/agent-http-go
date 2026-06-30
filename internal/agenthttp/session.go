@@ -8,15 +8,23 @@ import (
 )
 
 const (
-	defaultSessionMaxTurns        = 20
+	// defaultSessionMaxTurns 是拼接 prompt 时默认取的最多成功轮数。
+	defaultSessionMaxTurns = 20
+	// defaultSessionMaxHistoryBytes 是拼接 prompt 时历史文本的默认字节上限。
 	defaultSessionMaxHistoryBytes = 64 * 1024
-	maxSessionIDBytes             = 128
+	// maxSessionIDBytes 是 sessionId 允许的最长字节数。
+	maxSessionIDBytes = 128
 
-	SessionRoleUser      = "user"
+	// SessionRoleUser 表示消息来自用户。
+	SessionRoleUser = "user"
+	// SessionRoleAssistant 表示消息来自 agent assistant。
 	SessionRoleAssistant = "assistant"
 
-	SessionStatusOK       = "ok"
-	SessionStatusFailed   = "failed"
+	// SessionStatusOK 表示本轮执行成功。
+	SessionStatusOK = "ok"
+	// SessionStatusFailed 表示本轮执行失败。
+	SessionStatusFailed = "failed"
+	// SessionStatusTimedOut 表示本轮执行超时。
 	SessionStatusTimedOut = "timed_out"
 )
 
@@ -74,6 +82,7 @@ type SessionRunOptions struct {
 	MaxHistoryBytes int
 }
 
+// normalizedSessionRunOptions 用默认值填充 SessionRunOptions 中的零值字段。
 func normalizedSessionRunOptions(options SessionRunOptions) SessionRunOptions {
 	if options.MaxTurns <= 0 {
 		options.MaxTurns = defaultSessionMaxTurns
@@ -84,6 +93,7 @@ func normalizedSessionRunOptions(options SessionRunOptions) SessionRunOptions {
 	return options
 }
 
+// validateSessionID 校验 sessionId 格式：非空、不超过 128 字节、仅包含字母数字和 . _ - :。
 func validateSessionID(input string) (string, error) {
 	id := strings.TrimSpace(input)
 	if id == "" {
@@ -101,6 +111,7 @@ func validateSessionID(input string) (string, error) {
 	return id, nil
 }
 
+// isSessionIDChar 判断字符是否允许出现在 sessionId 中。
 func isSessionIDChar(ch rune) bool {
 	return ch >= 'a' && ch <= 'z' ||
 		ch >= 'A' && ch <= 'Z' ||

@@ -14,62 +14,24 @@ func RunClaude(body RunRequest, options RunnerOptions) (RunResult, error) {
 
 // RunClaudeContext 以 JSON 输出模式执行 Claude Code，并把 result 字段归一化成 RunResult。
 func RunClaudeContext(ctx context.Context, body RunRequest, options RunnerOptions) (RunResult, error) {
-	env := runnerEnv(options.Env)
-	workspaceRoot := runnerWorkspaceRoot(options.WorkspaceRoot)
-	timeout := runnerTimeout(options.Timeout)
-
-	prompt, err := ValidatePrompt(body)
+	prep, err := prepareRunner(body, options, options.ClaudeCommand, "claude", "claude")
 	if err != nil {
 		return RunResult{}, err
 	}
 
-	cwd, err := ResolveWorkspaceCwd(body.Cwd, workspaceRoot)
-	if err != nil {
-		return RunResult{}, err
-	}
-
-	path, err := FindExecutable(runnerCommand(options.ClaudeCommand, "claude"), env)
-	if err != nil {
-		return RunResult{}, err
-	}
-	if path == "" {
-		return RunResult{}, NewRequestError("claude CLI not found in PATH", http.StatusServiceUnavailable)
-	}
-
-	childResult := runChild(ctx, prompt, timeout, execCommandSpec{
-		Name: path,
+	childResult := runChild(ctx, prep.Prompt, prep.Timeout, execCommandSpec{
+		Name: prep.Path,
 		Args: []string{"--bare", "-p", "--output-format", "json"},
-		Cwd:  cwd,
-		Env:  env,
+		Cwd:  prep.Cwd,
+		Env:  prep.Env,
 	})
 
-	if childResult.TimedOut {
-		return RunResult{
-			OK:       false,
-			Error:    "claude execution timed out",
-			ExitCode: childResult.ExitCode,
-			TimedOut: true,
-			Output:   "",
-			Stdout:   childResult.Stdout,
-			Stderr:   childResult.Stderr,
-		}, nil
+	result, err := buildRunResult(childResult, "claude", "")
+	if err != nil {
+		return RunResult{}, err
 	}
-	if childResult.Err != nil {
-		return RunResult{}, childResult.Err
-	}
-	if childResult.ExitCode == nil || *childResult.ExitCode != 0 {
-		code := 0
-		if childResult.ExitCode != nil {
-			code = *childResult.ExitCode
-		}
-		return RunResult{
-			OK:       false,
-			Error:    "claude exited with code " + intString(code),
-			ExitCode: childResult.ExitCode,
-			Output:   "",
-			Stdout:   childResult.Stdout,
-			Stderr:   childResult.Stderr,
-		}, nil
+	if !result.OK {
+		return result, nil
 	}
 
 	output, err := ParseClaudeOutput(childResult.Stdout)
@@ -77,45 +39,23 @@ func RunClaudeContext(ctx context.Context, body RunRequest, options RunnerOption
 		return RunResult{}, err
 	}
 
-	return RunResult{
-		OK:       true,
-		ExitCode: childResult.ExitCode,
-		Output:   output,
-		Stdout:   childResult.Stdout,
-		Stderr:   childResult.Stderr,
-	}, nil
+	result.Output = output
+	return result, nil
 }
 
 // RunClaudeStreamContext 以流式方式执行 Claude Code。
 // 当前仍使用 Claude 的 JSON 输出模式；如果 CLI 实时写 stdout，则片段会被推给 StreamWriter。
 func RunClaudeStreamContext(ctx context.Context, body RunRequest, writer StreamWriter, options RunnerOptions) (RunResult, error) {
-	env := runnerEnv(options.Env)
-	workspaceRoot := runnerWorkspaceRoot(options.WorkspaceRoot)
-	timeout := runnerTimeout(options.Timeout)
-
-	prompt, err := ValidatePrompt(body)
+	prep, err := prepareRunner(body, options, options.ClaudeCommand, "claude", "claude")
 	if err != nil {
 		return RunResult{}, err
 	}
 
-	cwd, err := ResolveWorkspaceCwd(body.Cwd, workspaceRoot)
-	if err != nil {
-		return RunResult{}, err
-	}
-
-	path, err := FindExecutable(runnerCommand(options.ClaudeCommand, "claude"), env)
-	if err != nil {
-		return RunResult{}, err
-	}
-	if path == "" {
-		return RunResult{}, NewRequestError("claude CLI not found in PATH", http.StatusServiceUnavailable)
-	}
-
-	childResult := runChildStream(ctx, prompt, timeout, execCommandSpec{
-		Name: path,
+	childResult := runChildStream(ctx, prep.Prompt, prep.Timeout, execCommandSpec{
+		Name: prep.Path,
 		Args: []string{"--bare", "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"},
-		Cwd:  cwd,
-		Env:  env,
+		Cwd:  prep.Cwd,
+		Env:  prep.Env,
 	}, newJSONLineStreamWriter(writer, newClaudeJSONLDeltaParser()))
 
 	return claudeRunResult(childResult)
@@ -154,46 +94,21 @@ func ParseClaudeStreamOutput(stdout string) (string, error) {
 	return ParseClaudeOutput(stdout)
 }
 
-func claudeRunResult(childResult childResult) (RunResult, error) {
-	if childResult.TimedOut {
-		return RunResult{
-			OK:       false,
-			Error:    "claude execution timed out",
-			ExitCode: childResult.ExitCode,
-			TimedOut: true,
-			Output:   "",
-			Stdout:   childResult.Stdout,
-			Stderr:   childResult.Stderr,
-		}, nil
+// claudeRunResult 把 Claude stream-json 子进程结果转换成统一 RunResult。
+func claudeRunResult(child childResult) (RunResult, error) {
+	result, err := buildRunResult(child, "claude", "")
+	if err != nil {
+		return RunResult{}, err
 	}
-	if childResult.Err != nil {
-		return RunResult{}, childResult.Err
-	}
-	if childResult.ExitCode == nil || *childResult.ExitCode != 0 {
-		code := 0
-		if childResult.ExitCode != nil {
-			code = *childResult.ExitCode
-		}
-		return RunResult{
-			OK:       false,
-			Error:    "claude exited with code " + intString(code),
-			ExitCode: childResult.ExitCode,
-			Output:   "",
-			Stdout:   childResult.Stdout,
-			Stderr:   childResult.Stderr,
-		}, nil
+	if !result.OK {
+		return result, nil
 	}
 
-	output, err := ParseClaudeStreamOutput(childResult.Stdout)
+	output, err := ParseClaudeStreamOutput(child.Stdout)
 	if err != nil {
 		return RunResult{}, err
 	}
 
-	return RunResult{
-		OK:       true,
-		ExitCode: childResult.ExitCode,
-		Output:   output,
-		Stdout:   childResult.Stdout,
-		Stderr:   childResult.Stderr,
-	}, nil
+	result.Output = output
+	return result, nil
 }

@@ -14,8 +14,10 @@ import (
 	"github.com/Brinjaul-Smile/agent-http-go/internal/agenthttp"
 )
 
+// defaultShutdownTimeout 是优雅关闭 HTTP 服务的默认等待时间。
 const defaultShutdownTimeout = 10 * time.Second
 
+// main 是 agent-http-go 服务入口，依次完成配置加载、日志初始化、会话存储创建和 HTTP 服务启动。
 func main() {
 	// 先加载配置文件，再允许 HOST/PORT 环境变量覆盖监听地址。
 	config, err := LoadConfig(ConfigOptions{
@@ -35,6 +37,7 @@ func main() {
 	}
 }
 
+// serve 创建 session 存储、构建 HTTP handler 并启动 HTTP 服务。
 func serve(ctx context.Context, config Config, logger *slog.Logger) error {
 	sessionStore, err := newSessionStore(config)
 	if err != nil {
@@ -76,11 +79,13 @@ func serve(ctx context.Context, config Config, logger *slog.Logger) error {
 	return runHTTPServer(ctx, server, logger, config.ShutdownTimeout)
 }
 
+// closeableSessionStore 是可关闭的 SessionStore，允许启动阶段选择不同存储实现。
 type closeableSessionStore interface {
 	agenthttp.SessionStore
 	Close() error
 }
 
+// newSessionStore 根据配置创建会话存储实例；未启用时返回 nil。
 func newSessionStore(config Config) (closeableSessionStore, error) {
 	if !config.SessionEnabled {
 		return nil, nil
@@ -93,6 +98,7 @@ func newSessionStore(config Config) (closeableSessionStore, error) {
 	}
 }
 
+// runHTTPServer 启动 HTTP 服务并等待中断信号后优雅关闭。
 func runHTTPServer(ctx context.Context, server *http.Server, logger *slog.Logger, shutdownTimeout time.Duration) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()

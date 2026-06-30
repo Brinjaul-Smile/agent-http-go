@@ -12,9 +12,13 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// sqliteTimeFormat 是 SQLite 存储时间戳使用的格式，纳秒精度、可排序。
 const sqliteTimeFormat = time.RFC3339Nano
 
+// SQLiteSessionStore 基于纯 Go SQLite 实现的 SessionStore。
+// 最大打开连接数为 1，避免并发写入时出现 busy/lock 竞态。
 type SQLiteSessionStore struct {
+	// db 是底层 SQLite 连接句柄。
 	db *sql.DB
 }
 
@@ -44,6 +48,7 @@ func OpenSQLiteSessionStore(path string) (*SQLiteSessionStore, error) {
 	return store, nil
 }
 
+// Close 关闭底层 SQLite 数据库连接。
 func (s *SQLiteSessionStore) Close() error {
 	if s == nil || s.db == nil {
 		return nil
@@ -254,10 +259,12 @@ func scanSessionMessages(rows *sql.Rows) ([]SessionMessage, error) {
 	return messages, nil
 }
 
+// formatSQLiteTime 将时间转为 UTC 并格式化为 SQLite 兼容字符串。
 func formatSQLiteTime(value time.Time) string {
 	return value.UTC().Format(sqliteTimeFormat)
 }
 
+// parseSQLiteTime 将 SQLite 时间字符串解析为 time.Time。
 func parseSQLiteTime(value string) (time.Time, error) {
 	return time.Parse(sqliteTimeFormat, value)
 }

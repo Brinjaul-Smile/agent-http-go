@@ -253,6 +253,7 @@ func (s *Server) runnerNames() []string {
 	return names
 }
 
+// serverMaxBodyBytes 返回有效的请求体大小上限；未配置时使用默认值。
 func serverMaxBodyBytes(maxBodyBytes int64) int64 {
 	if maxBodyBytes > 0 {
 		return maxBodyBytes

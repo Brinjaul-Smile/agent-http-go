@@ -5,21 +5,29 @@ import (
 	"sync"
 )
 
+// sessionLockStore 按 sessionId 维护互斥锁，保证同一个 session 的并发请求串行执行。
 type sessionLockStore struct {
-	mu    sync.Mutex
+	// mu 保护 locks map 的并发读写。
+	mu sync.Mutex
+	// locks 保存每个 sessionId 对应的通道信号量。
 	locks map[string]*sessionLock
 }
 
+// sessionLock 是容量为 1 的 channel，用作单 session 互斥信号量。
 type sessionLock struct {
+	// token 容量为 1，获取锁 = 从 channel 读取，释放 = 写回。
 	token chan struct{}
 }
 
+// newSessionLockStore 创建空的 session 锁存储。
 func newSessionLockStore() *sessionLockStore {
 	return &sessionLockStore{
 		locks: make(map[string]*sessionLock),
 	}
 }
 
+// acquire 获取 session 锁，返回的 release 函数必须在调用方退出前执行。
+// ctx 超时或取消时返回错误，不会持有锁。
 func (s *sessionLockStore) acquire(ctx context.Context, sessionID string) (func(), error) {
 	lock := s.lockFor(sessionID)
 	select {

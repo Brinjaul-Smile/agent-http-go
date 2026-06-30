@@ -2,7 +2,6 @@ package agenthttp
 
 import (
 	"context"
-	"net/http"
 	"os"
 	"path/filepath"
 )
@@ -14,26 +13,9 @@ func RunCodex(body RunRequest, options RunnerOptions) (RunResult, error) {
 
 // RunCodexContext 以非交互方式执行 codex，并从 codex 写出的输出文件读取最终回复。
 func RunCodexContext(ctx context.Context, body RunRequest, options RunnerOptions) (RunResult, error) {
-	env := runnerEnv(options.Env)
-	workspaceRoot := runnerWorkspaceRoot(options.WorkspaceRoot)
-	timeout := runnerTimeout(options.Timeout)
-
-	prompt, err := ValidatePrompt(body)
+	prep, err := prepareRunner(body, options, options.CodexCommand, "codex", "codex")
 	if err != nil {
 		return RunResult{}, err
-	}
-
-	cwd, err := ResolveWorkspaceCwd(body.Cwd, workspaceRoot)
-	if err != nil {
-		return RunResult{}, err
-	}
-
-	path, err := FindExecutable(runnerCommand(options.CodexCommand, "codex"), env)
-	if err != nil {
-		return RunResult{}, err
-	}
-	if path == "" {
-		return RunResult{}, NewRequestError("codex CLI not found in PATH", http.StatusServiceUnavailable)
 	}
 
 	tempDir, err := os.MkdirTemp("", "codex-http-")
@@ -43,11 +25,11 @@ func RunCodexContext(ctx context.Context, body RunRequest, options RunnerOptions
 	defer os.RemoveAll(tempDir)
 
 	outputPath := filepath.Join(tempDir, "last-message.txt")
-	childResult := runChild(ctx, prompt, timeout, execCommandSpec{
-		Name: path,
-		Args: []string{"exec", "--skip-git-repo-check", "-C", cwd, "-o", outputPath, "-"},
-		Cwd:  cwd,
-		Env:  env,
+	childResult := runChild(ctx, prep.Prompt, prep.Timeout, execCommandSpec{
+		Name: prep.Path,
+		Args: []string{"exec", "--skip-git-repo-check", "-C", prep.Cwd, "-o", outputPath, "-"},
+		Cwd:  prep.Cwd,
+		Env:  prep.Env,
 	})
 
 	output, readErr := readOutputFile(outputPath)
@@ -55,160 +37,61 @@ func RunCodexContext(ctx context.Context, body RunRequest, options RunnerOptions
 		return RunResult{}, readErr
 	}
 
-	if childResult.TimedOut {
-		return RunResult{
-			OK:       false,
-			Error:    "codex execution timed out",
-			ExitCode: childResult.ExitCode,
-			TimedOut: true,
-			Output:   output,
-			Stdout:   childResult.Stdout,
-			Stderr:   childResult.Stderr,
-		}, nil
+	result, err := buildRunResult(childResult, "codex", output)
+	if err != nil {
+		return RunResult{}, err
 	}
-	if childResult.Err != nil {
-		return RunResult{}, childResult.Err
-	}
-	if childResult.ExitCode == nil || *childResult.ExitCode != 0 {
-		code := 0
-		if childResult.ExitCode != nil {
-			code = *childResult.ExitCode
-		}
-		return RunResult{
-			OK:       false,
-			Error:    "codex exited with code " + intString(code),
-			ExitCode: childResult.ExitCode,
-			Output:   output,
-			Stdout:   childResult.Stdout,
-			Stderr:   childResult.Stderr,
-		}, nil
-	}
-
-	return RunResult{
-		OK:       true,
-		ExitCode: childResult.ExitCode,
-		Output:   output,
-		Stdout:   childResult.Stdout,
-		Stderr:   childResult.Stderr,
-	}, nil
+	return result, nil
 }
 
 // RunCodexStreamContext 以 SSE 兼容方式执行 codex。
 // codex exec --json 当前不提供 Claude 风格的正文增量输出；流式接口改用
 // experimental app-server 协议里的 item/agentMessage/delta 通知。
 func RunCodexStreamContext(ctx context.Context, body RunRequest, writer StreamWriter, options RunnerOptions) (RunResult, error) {
-	env := runnerEnv(options.Env)
-	workspaceRoot := runnerWorkspaceRoot(options.WorkspaceRoot)
-	timeout := runnerTimeout(options.Timeout)
-
-	prompt, err := ValidatePrompt(body)
+	prep, err := prepareRunner(body, options, options.CodexCommand, "codex", "codex")
 	if err != nil {
 		return RunResult{}, err
 	}
 
-	cwd, err := ResolveWorkspaceCwd(body.Cwd, workspaceRoot)
-	if err != nil {
-		return RunResult{}, err
-	}
-	absoluteWorkspaceRoot, err := filepath.Abs(workspaceRoot)
-	if err != nil {
-		return RunResult{}, err
-	}
-
-	path, err := FindExecutable(runnerCommand(options.CodexCommand, "codex"), env)
-	if err != nil {
-		return RunResult{}, err
-	}
-	if path == "" {
-		return RunResult{}, NewRequestError("codex CLI not found in PATH", http.StatusServiceUnavailable)
-	}
-
-	appResult := runCodexAppServerStream(ctx, prompt, timeout, execCommandSpec{
-		Name: path,
+	appResult := runCodexAppServerStream(ctx, prep.Prompt, prep.Timeout, execCommandSpec{
+		Name: prep.Path,
 		Args: []string{"app-server", "--stdio"},
-		Cwd:  cwd,
-		Env:  env,
-	}, writer, cwd, absoluteWorkspaceRoot, normalizedCodexAppServerOptions(options.CodexAppServerOptions))
+		Cwd:  prep.Cwd,
+		Env:  prep.Env,
+	}, writer, prep.Cwd, prep.AbsoluteWorkspaceRoot, normalizedCodexAppServerOptions(options.CodexAppServerOptions))
 
 	return codexAppServerRunResult(appResult)
 }
 
-func codexRunResult(childResult childResult, output string) (RunResult, error) {
-	if childResult.TimedOut {
-		return RunResult{
-			OK:       false,
-			Error:    "codex execution timed out",
-			ExitCode: childResult.ExitCode,
-			TimedOut: true,
-			Output:   output,
-			Stdout:   childResult.Stdout,
-			Stderr:   childResult.Stderr,
-		}, nil
-	}
-	if childResult.Err != nil {
-		return RunResult{}, childResult.Err
-	}
-	if childResult.ExitCode == nil || *childResult.ExitCode != 0 {
-		code := 0
-		if childResult.ExitCode != nil {
-			code = *childResult.ExitCode
-		}
-		return RunResult{
-			OK:       false,
-			Error:    "codex exited with code " + intString(code),
-			ExitCode: childResult.ExitCode,
-			Output:   output,
-			Stdout:   childResult.Stdout,
-			Stderr:   childResult.Stderr,
-		}, nil
-	}
-
-	return RunResult{
-		OK:       true,
-		ExitCode: childResult.ExitCode,
-		Output:   output,
-		Stdout:   childResult.Stdout,
-		Stderr:   childResult.Stderr,
-	}, nil
+// codexRunResult 把 codex exec 子进程结果和输出文件内容转换成统一 RunResult。
+func codexRunResult(child childResult, output string) (RunResult, error) {
+	return buildRunResult(child, "codex", output)
 }
 
+// codexAppServerRun 保存一次 codex app-server 流式 turn 的执行状态。
 type codexAppServerRun struct {
+	// childResult 保存 app-server 进程退出信息和原始输出。
 	childResult
-	Output      string
-	TurnStatus  string
-	TurnError   string
+	// Output 是 turn/completed 中最后一条 agentMessage 文本。
+	Output string
+	// TurnStatus 是 codex turn 的最终状态。
+	TurnStatus string
+	// TurnError 是 codex turn 失败时返回的错误文本。
+	TurnError string
+	// Initialized 标记 initialize 请求是否完成。
 	Initialized bool
-	Completed   bool
+	// Completed 标记是否收到 turn/completed 通知。
+	Completed bool
 }
 
+// codexAppServerRunResult 把 codex app-server 执行状态转换成统一 RunResult。
 func codexAppServerRunResult(appResult codexAppServerRun) (RunResult, error) {
-	if appResult.TimedOut {
-		return RunResult{
-			OK:       false,
-			Error:    "codex execution timed out",
-			ExitCode: appResult.ExitCode,
-			TimedOut: true,
-			Output:   appResult.Output,
-			Stdout:   appResult.Stdout,
-			Stderr:   appResult.Stderr,
-		}, nil
+	result, err := buildRunResult(appResult.childResult, "codex", appResult.Output)
+	if err != nil {
+		return RunResult{}, err
 	}
-	if appResult.Err != nil {
-		return RunResult{}, appResult.Err
-	}
-	if appResult.ExitCode == nil || *appResult.ExitCode != 0 {
-		code := 0
-		if appResult.ExitCode != nil {
-			code = *appResult.ExitCode
-		}
-		return RunResult{
-			OK:       false,
-			Error:    "codex exited with code " + intString(code),
-			ExitCode: appResult.ExitCode,
-			Output:   appResult.Output,
-			Stdout:   appResult.Stdout,
-			Stderr:   appResult.Stderr,
-		}, nil
+	if !result.OK {
+		return result, nil
 	}
 	if !appResult.Completed {
 		return RunResult{
@@ -235,11 +118,5 @@ func codexAppServerRunResult(appResult codexAppServerRun) (RunResult, error) {
 		}, nil
 	}
 
-	return RunResult{
-		OK:       true,
-		ExitCode: appResult.ExitCode,
-		Output:   appResult.Output,
-		Stdout:   appResult.Stdout,
-		Stderr:   appResult.Stderr,
-	}, nil
+	return result, nil
 }

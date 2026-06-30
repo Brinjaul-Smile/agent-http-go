@@ -66,6 +66,7 @@ func formatRunResult(result RunResult, includeDebug bool) map[string]any {
 	return response
 }
 
+// sendStreamResultIfDebug 仅在 debug 模式下发送包含原始 stdout/stderr 的 result 事件。
 func sendStreamResultIfDebug(stream *sseStream, result RunResult, includeDebug bool) {
 	if !includeDebug {
 		return
@@ -73,6 +74,7 @@ func sendStreamResultIfDebug(stream *sseStream, result RunResult, includeDebug b
 	stream.send("result", formatRunResult(result, true))
 }
 
+// formatStreamDone 构建 SSE done 事件的载荷，不含 debug 信息以减少事件体积。
 func formatStreamDone(result RunResult) map[string]any {
 	response := map[string]any{"ok": result.OK}
 	if result.SessionID != "" {
@@ -104,9 +106,12 @@ func sendJSON(response http.ResponseWriter, statusCode int, body any) {
 	_, _ = response.Write(payload)
 }
 
+// sseStream 封装 Server-Sent Events 响应流，把 runner 输出转成 SSE 事件。
 type sseStream struct {
+	// response 是 HTTP 响应写入器。
 	response http.ResponseWriter
-	flusher  http.Flusher
+	// flusher 用于即时刷新缓冲区，确保客户端能尽快收到事件。
+	flusher http.Flusher
 }
 
 // newSSEStream 初始化 Server-Sent Events 响应头。

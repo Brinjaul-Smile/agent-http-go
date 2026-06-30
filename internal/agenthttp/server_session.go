@@ -76,56 +76,21 @@ func (s *Server) handleSessionRun(response http.ResponseWriter, request *http.Re
 		return
 	}
 
-	originalPrompt, err := ValidatePrompt(body)
+	prep, err := s.prepareSessionRun(request, body, sessionID)
 	if err != nil {
 		s.sendError(response, err)
 		return
 	}
+	defer prep.release()
 
-	cwd, err := ResolveWorkspaceCwd(body.Cwd, s.workspaceRoot)
+	result, err := runner(request.Context(), prep.body)
 	if err != nil {
-		s.sendError(response, err)
-		return
-	}
-	body.Cwd = cwd
-
-	// 同一个 session 的历史读、runner 调用、结果写回必须串行，
-	// 否则并发请求会基于过期历史生成回复并乱序写入消息。
-	release, err := s.sessionLocks.acquire(request.Context(), sessionID)
-	if err != nil {
-		s.sendError(response, err)
-		return
-	}
-	defer release()
-
-	if err := s.ensureSessionMatches(request.Context(), sessionID, body.Agent, cwd); err != nil {
-		s.sendError(response, err)
-		return
-	}
-
-	// 只取成功消息作为上下文。失败和超时会保留在库里供审计，
-	// 但不会进入下一次 prompt，避免把错误输出当成正常对话历史。
-	messages, err := s.sessionStore.ListContextMessages(request.Context(), sessionID, s.sessionOptions.MaxTurns*2)
-	if err != nil {
-		s.sendError(response, err)
-		return
-	}
-	body.Prompt = buildSessionPrompt(messages, originalPrompt, s.sessionOptions.MaxHistoryBytes)
-
-	result, err := runner(request.Context(), body)
-	if err != nil {
-		// runner 返回执行错误时也记录这一轮，便于后续通过 GET /sessions/{id}
-		// 看见用户输入和失败原因；这类 failed turn 不参与后续上下文。
-		appendErr := s.sessionStore.AppendTurn(request.Context(), SessionTurn{
+		s.sessionStore.AppendTurn(request.Context(), SessionTurn{
 			SessionID:        sessionID,
-			UserContent:      originalPrompt,
+			UserContent:      prep.originalPrompt,
 			AssistantContent: errorMessage(err),
 			Status:           SessionStatusFailed,
 		})
-		if appendErr != nil {
-			s.sendError(response, appendErr)
-			return
-		}
 		s.sendError(response, err)
 		return
 	}
@@ -133,7 +98,7 @@ func (s *Server) handleSessionRun(response http.ResponseWriter, request *http.Re
 	result.SessionID = sessionID
 	if err := s.sessionStore.AppendTurn(request.Context(), SessionTurn{
 		SessionID:        sessionID,
-		UserContent:      originalPrompt,
+		UserContent:      prep.originalPrompt,
 		AssistantContent: sessionAssistantContent(result),
 		Status:           sessionStatusFromResult(result),
 	}); err != nil {
@@ -163,37 +128,12 @@ func (s *Server) handleSessionRunStream(response http.ResponseWriter, request *h
 		return
 	}
 
-	originalPrompt, err := ValidatePrompt(body)
+	prep, err := s.prepareSessionRun(request, body, sessionID)
 	if err != nil {
 		s.sendError(response, err)
 		return
 	}
-
-	cwd, err := ResolveWorkspaceCwd(body.Cwd, s.workspaceRoot)
-	if err != nil {
-		s.sendError(response, err)
-		return
-	}
-	body.Cwd = cwd
-
-	release, err := s.sessionLocks.acquire(request.Context(), sessionID)
-	if err != nil {
-		s.sendError(response, err)
-		return
-	}
-	defer release()
-
-	if err := s.ensureSessionMatches(request.Context(), sessionID, body.Agent, cwd); err != nil {
-		s.sendError(response, err)
-		return
-	}
-
-	messages, err := s.sessionStore.ListContextMessages(request.Context(), sessionID, s.sessionOptions.MaxTurns*2)
-	if err != nil {
-		s.sendError(response, err)
-		return
-	}
-	body.Prompt = buildSessionPrompt(messages, originalPrompt, s.sessionOptions.MaxHistoryBytes)
+	defer prep.release()
 
 	stream, ok := newSSEStream(response)
 	if !ok {
@@ -202,19 +142,14 @@ func (s *Server) handleSessionRunStream(response http.ResponseWriter, request *h
 	}
 	stream.send("start", map[string]any{"ok": true, "sessionId": sessionID})
 
-	result, err := runner(request.Context(), body, stream)
+	result, err := runner(request.Context(), prep.body, stream)
 	if err != nil {
-		appendErr := s.sessionStore.AppendTurn(request.Context(), SessionTurn{
+		s.sessionStore.AppendTurn(request.Context(), SessionTurn{
 			SessionID:        sessionID,
-			UserContent:      originalPrompt,
+			UserContent:      prep.originalPrompt,
 			AssistantContent: errorMessage(err),
 			Status:           SessionStatusFailed,
 		})
-		if appendErr != nil {
-			stream.send("error", map[string]any{"ok": false, "error": errorMessage(appendErr)})
-			stream.send("done", map[string]any{"ok": false, "sessionId": sessionID})
-			return
-		}
 		stream.send("error", map[string]any{"ok": false, "sessionId": sessionID, "error": errorMessage(err)})
 		stream.send("done", map[string]any{"ok": false, "sessionId": sessionID})
 		return
@@ -223,7 +158,7 @@ func (s *Server) handleSessionRunStream(response http.ResponseWriter, request *h
 	result.SessionID = sessionID
 	if err := s.sessionStore.AppendTurn(request.Context(), SessionTurn{
 		SessionID:        sessionID,
-		UserContent:      originalPrompt,
+		UserContent:      prep.originalPrompt,
 		AssistantContent: sessionAssistantContent(result),
 		Status:           sessionStatusFromResult(result),
 	}); err != nil {
@@ -299,4 +234,54 @@ func (s *Server) handleDeleteSession(response http.ResponseWriter, request *http
 		return
 	}
 	sendJSON(response, http.StatusOK, map[string]any{"ok": true})
+}
+
+// sessionRunContext 保存一次 session run 经过校验和锁获取后的执行上下文，
+// 消除 handleSessionRun 和 handleSessionRunStream 中重复的准备逻辑。
+type sessionRunContext struct {
+	// body 的 Prompt 已被替换为包含历史上下文的完整 prompt。
+	body RunRequest
+	// originalPrompt 是请求中原始的用户输入，用于写入 session 消息。
+	originalPrompt string
+	// release 释放 session 锁。
+	release func()
+}
+
+// prepareSessionRun 集中处理 session run 的通用准备：
+// prompt 校验、cwd 边界解析、session 锁获取、agent/cwd 一致性校验、
+// 历史消息查询和 prompt 拼接。
+func (s *Server) prepareSessionRun(request *http.Request, body RunRequest, sessionID string) (*sessionRunContext, error) {
+	originalPrompt, err := ValidatePrompt(body)
+	if err != nil {
+		return nil, err
+	}
+
+	cwd, err := ResolveWorkspaceCwd(body.Cwd, s.workspaceRoot)
+	if err != nil {
+		return nil, err
+	}
+	body.Cwd = cwd
+
+	release, err := s.sessionLocks.acquire(request.Context(), sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.ensureSessionMatches(request.Context(), sessionID, body.Agent, cwd); err != nil {
+		release()
+		return nil, err
+	}
+
+	messages, err := s.sessionStore.ListContextMessages(request.Context(), sessionID, s.sessionOptions.MaxTurns*2)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	body.Prompt = buildSessionPrompt(messages, originalPrompt, s.sessionOptions.MaxHistoryBytes)
+
+	return &sessionRunContext{
+		body:           body,
+		originalPrompt: originalPrompt,
+		release:        release,
+	}, nil
 }

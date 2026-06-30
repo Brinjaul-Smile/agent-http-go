@@ -79,6 +79,7 @@ func FindExecutable(command string, env []string) (string, error) {
 	return "", nil
 }
 
+// isExecutableFile 检查路径是否指向可执行文件；文件不存在时返回 (false, nil) 而非错误。
 func isExecutableFile(path string) (bool, error) {
 	info, err := os.Stat(path)
 	if err != nil {
