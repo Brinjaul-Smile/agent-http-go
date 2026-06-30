@@ -1,0 +1,773 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>会话流式调试台</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #667085;
+      --line: #d6dbe3;
+      --accent: #14746f;
+      --accent-strong: #0b5f59;
+      --danger: #b42318;
+      --warning: #9a6700;
+      --code: #101828;
+      --soft: #eef6f5;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    button {
+      min-height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      cursor: pointer;
+      padding: 7px 12px;
+      white-space: nowrap;
+    }
+
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+
+    button.danger {
+      border-color: #f1b8b2;
+      color: var(--danger);
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      padding: 8px 10px;
+    }
+
+    textarea {
+      min-height: 150px;
+      resize: vertical;
+    }
+
+    label {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    label span {
+      color: var(--muted);
+    }
+
+    .shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    h1,
+    h2 {
+      margin: 0;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: 18px;
+    }
+
+    h2 {
+      font-size: 14px;
+    }
+
+    .status {
+      min-height: 24px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: right;
+    }
+
+    .status.error {
+      color: var(--danger);
+    }
+
+    .status.ok {
+      color: var(--accent-strong);
+    }
+
+    main {
+      width: min(1500px, 100%);
+      margin: 0 auto;
+      padding: 18px 20px 28px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(360px, 0.9fr);
+      gap: 16px;
+    }
+
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      min-width: 0;
+    }
+
+    .section-head {
+      min-height: 48px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .section-body {
+      padding: 14px;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) 130px minmax(180px, 0.8fr) auto;
+      gap: 12px;
+      align-items: end;
+    }
+
+    .checkbox {
+      min-height: 36px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .checkbox input {
+      width: auto;
+      margin: 0;
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .prompt-row {
+      margin-top: 14px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .output {
+      min-height: 220px;
+      max-height: 420px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfd;
+      padding: 12px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      color: var(--code);
+    }
+
+    .log,
+    .history {
+      height: 390px;
+      overflow: auto;
+      display: grid;
+      align-content: start;
+      gap: 8px;
+      background: #fbfcfd;
+    }
+
+    .event,
+    .message,
+    .notice {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      padding: 9px 10px;
+    }
+
+    .event-name,
+    .message-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+
+    .event-name strong,
+    .message-meta strong {
+      color: var(--accent-strong);
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      color: var(--code);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .notice {
+      color: var(--muted);
+      background: var(--soft);
+    }
+
+    .notice.warning {
+      border-color: #f2d28b;
+      background: #fff8e5;
+      color: var(--warning);
+    }
+
+    .two-pane {
+      display: grid;
+      gap: 16px;
+    }
+
+    @media (max-width: 980px) {
+      main {
+        grid-template-columns: 1fr;
+      }
+
+      .controls {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .status {
+        text-align: left;
+      }
+    }
+
+    @media (max-width: 640px) {
+      main {
+        padding: 12px;
+      }
+
+      .controls {
+        grid-template-columns: 1fr;
+      }
+
+      .actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+      }
+
+      button {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div>
+        <h1>会话流式调试台</h1>
+      </div>
+      <div id="status" class="status">空闲</div>
+    </header>
+
+    <main>
+      <section>
+        <div class="section-head">
+          <h2>运行</h2>
+          <div class="actions">
+            <button id="newSessionButton" type="button">新会话</button>
+            <button id="refreshButton" type="button">刷新历史</button>
+            <button id="deleteButton" class="danger" type="button">删除会话</button>
+          </div>
+        </div>
+        <div class="section-body">
+          <div id="fileNotice" class="notice warning" hidden>
+            请从 Go 服务提供的 URL 打开本页面，这样页面和 API 同源，才能正常调用接口。
+          </div>
+          <div class="controls">
+            <label>
+              <span>会话 ID</span>
+              <input id="sessionIdInput" autocomplete="off">
+            </label>
+            <label>
+              <span>执行器</span>
+              <select id="agentSelect">
+                <option value="claude">claude</option>
+                <option value="codex">codex</option>
+              </select>
+            </label>
+            <label>
+              <span>工作目录</span>
+              <input id="cwdInput" placeholder="./可选子目录" autocomplete="off">
+            </label>
+            <label class="checkbox">
+              <input id="debugInput" type="checkbox">
+              调试
+            </label>
+          </div>
+
+          <div class="prompt-row">
+            <label>
+              <span>提示词</span>
+              <textarea id="promptInput" placeholder="给当前选择的执行器发送一条消息"></textarea>
+            </label>
+            <div class="actions">
+              <button id="sendButton" class="primary" type="button">发送流式请求</button>
+              <button id="stopButton" type="button" disabled>停止</button>
+              <button id="clearButton" type="button">清空输出</button>
+            </div>
+            <label>
+              <span>助手增量输出</span>
+              <div id="assistantOutput" class="output"></div>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <div class="two-pane">
+        <section>
+          <div class="section-head">
+            <h2>SSE 事件</h2>
+            <button id="clearEventsButton" type="button">清空</button>
+          </div>
+          <div id="eventLog" class="section-body log"></div>
+        </section>
+
+        <section>
+          <div class="section-head">
+            <h2>持久化历史</h2>
+          </div>
+          <div id="historyLog" class="section-body history"></div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const state = {
+      controller: null,
+      running: false,
+      sessionStarted: false,
+      boundAgent: "claude",
+      boundCwd: "",
+      lastAgent: "claude",
+      lastCwd: "",
+    };
+
+    const els = {
+      status: document.getElementById("status"),
+      fileNotice: document.getElementById("fileNotice"),
+      sessionId: document.getElementById("sessionIdInput"),
+      agent: document.getElementById("agentSelect"),
+      cwd: document.getElementById("cwdInput"),
+      debug: document.getElementById("debugInput"),
+      prompt: document.getElementById("promptInput"),
+      send: document.getElementById("sendButton"),
+      stop: document.getElementById("stopButton"),
+      clear: document.getElementById("clearButton"),
+      refresh: document.getElementById("refreshButton"),
+      deleteSession: document.getElementById("deleteButton"),
+      newSession: document.getElementById("newSessionButton"),
+      output: document.getElementById("assistantOutput"),
+      events: document.getElementById("eventLog"),
+      history: document.getElementById("historyLog"),
+      clearEvents: document.getElementById("clearEventsButton"),
+    };
+
+    function newSessionId() {
+      const now = new Date();
+      const stamp = [
+        now.getFullYear(),
+        String(now.getMonth() + 1).padStart(2, "0"),
+        String(now.getDate()).padStart(2, "0"),
+        "-",
+        String(now.getHours()).padStart(2, "0"),
+        String(now.getMinutes()).padStart(2, "0"),
+        String(now.getSeconds()).padStart(2, "0"),
+      ].join("");
+      const suffix = Math.random().toString(36).slice(2, 8);
+      return `demo-${stamp}-${suffix}`;
+    }
+
+    function apiBase() {
+      if (location.protocol === "file:") {
+        return "http://127.0.0.1:8787";
+      }
+      return "";
+    }
+
+    function setStatus(message, kind = "") {
+      els.status.textContent = message;
+      els.status.className = `status ${kind}`.trim();
+    }
+
+    function setRunning(running) {
+      state.running = running;
+      els.send.disabled = running;
+      els.stop.disabled = !running;
+      els.agent.disabled = running;
+      els.cwd.disabled = running;
+      els.sessionId.disabled = running;
+    }
+
+    function appendEvent(name, data) {
+      const item = document.createElement("div");
+      item.className = "event";
+      const time = new Date().toLocaleTimeString();
+      item.innerHTML = `
+        <div class="event-name"><strong></strong><span></span></div>
+        <pre></pre>
+      `;
+      item.querySelector("strong").textContent = name;
+      item.querySelector("span").textContent = time;
+      item.querySelector("pre").textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+      els.events.appendChild(item);
+      els.events.scrollTop = els.events.scrollHeight;
+    }
+
+    function appendOutput(delta) {
+      els.output.textContent += delta;
+      els.output.scrollTop = els.output.scrollHeight;
+    }
+
+    function resetCurrentSession() {
+      els.sessionId.value = newSessionId();
+      state.sessionStarted = false;
+      state.boundAgent = els.agent.value;
+      state.boundCwd = els.cwd.value.trim();
+      state.lastAgent = els.agent.value;
+      state.lastCwd = els.cwd.value.trim();
+      els.output.textContent = "";
+      els.events.innerHTML = "";
+      els.history.innerHTML = '<div class="notice">尚未加载历史。</div>';
+      setStatus("新会话已就绪", "ok");
+    }
+
+    function rememberBinding() {
+      state.boundAgent = els.agent.value;
+      state.boundCwd = els.cwd.value.trim();
+      state.lastAgent = state.boundAgent;
+      state.lastCwd = state.boundCwd;
+    }
+
+    function handleBindingChange() {
+      const nextAgent = els.agent.value;
+      const nextCwd = els.cwd.value.trim();
+      if (!state.sessionStarted) {
+        state.lastAgent = nextAgent;
+        state.lastCwd = nextCwd;
+        return;
+      }
+      if (nextAgent === state.boundAgent && nextCwd === state.boundCwd) {
+        state.lastAgent = nextAgent;
+        state.lastCwd = nextCwd;
+        return;
+      }
+      const confirmed = confirm("当前会话已经绑定第一次请求使用的 agent 和工作目录。要为这次变更生成新的会话 ID 吗？");
+      if (confirmed) {
+        state.sessionStarted = false;
+        els.sessionId.value = newSessionId();
+        rememberBinding();
+        els.output.textContent = "";
+        els.events.innerHTML = "";
+        els.history.innerHTML = '<div class="notice">尚未加载历史。</div>';
+        setStatus("已为新的绑定生成会话", "ok");
+        return;
+      }
+      els.agent.value = state.lastAgent;
+      els.cwd.value = state.lastCwd;
+    }
+
+    async function loadAgents() {
+      const response = await fetch(`${apiBase()}/agents`);
+      if (!response.ok) {
+        return [];
+      }
+      const payload = await response.json();
+      const selected = els.agent.value;
+      const agents = Array.isArray(payload.agents) ? payload.agents : [];
+      for (const option of els.agent.options) {
+        const agent = agents.find((item) => item.name === option.value);
+        option.disabled = Boolean(agent && !agent.available);
+        option.textContent = agent && !agent.available ? `${option.value}（不可用）` : option.value;
+      }
+      els.agent.value = selected;
+      return agents;
+    }
+
+    async function refreshHistory() {
+      const sessionId = els.sessionId.value.trim();
+      if (!sessionId) {
+        els.history.innerHTML = '<div class="notice warning">会话 ID 不能为空。</div>';
+        return;
+      }
+      const response = await fetch(`${apiBase()}/sessions/${encodeURIComponent(sessionId)}`);
+      if (response.status === 404) {
+        els.history.innerHTML = '<div class="notice">当前会话还没有持久化历史。</div>';
+        state.sessionStarted = false;
+        return;
+      }
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || `GET /sessions 请求失败，状态码 ${response.status}`);
+      }
+      state.sessionStarted = Array.isArray(payload.messages) && payload.messages.length > 0;
+      if (payload.session) {
+        state.boundAgent = payload.session.agent || state.boundAgent;
+        state.boundCwd = payload.session.cwd || state.boundCwd;
+        state.lastAgent = els.agent.value;
+        state.lastCwd = els.cwd.value.trim();
+      }
+      renderHistory(payload);
+    }
+
+    function renderHistory(payload) {
+      const session = payload.session || {};
+      const messages = Array.isArray(payload.messages) ? payload.messages : [];
+      const nodes = [];
+      nodes.push(`<div class="notice"><pre>${escapeHTML(JSON.stringify(session, null, 2))}</pre></div>`);
+      for (const message of messages) {
+        nodes.push(`
+          <div class="message">
+            <div class="message-meta">
+              <strong>${escapeHTML(message.role || "消息")}</strong>
+              <span>${escapeHTML(message.status || "")} ${escapeHTML(message.createdAt || "")}</span>
+            </div>
+            <pre>${escapeHTML(message.content || "")}</pre>
+          </div>
+        `);
+      }
+      els.history.innerHTML = nodes.join("");
+      els.history.scrollTop = els.history.scrollHeight;
+    }
+
+    function escapeHTML(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    async function deleteSession() {
+      const sessionId = els.sessionId.value.trim();
+      if (!sessionId) {
+        setStatus("会话 ID 不能为空", "error");
+        return;
+      }
+      if (!confirm(`确定删除会话 ${sessionId} 吗？`)) {
+        return;
+      }
+      const response = await fetch(`${apiBase()}/sessions/${encodeURIComponent(sessionId)}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || `DELETE /sessions 请求失败，状态码 ${response.status}`);
+      }
+      state.sessionStarted = false;
+      rememberBinding();
+      els.history.innerHTML = '<div class="notice">会话已删除。</div>';
+      appendEvent("delete", payload);
+      setStatus("会话已删除", "ok");
+    }
+
+    async function sendStream() {
+      const sessionId = els.sessionId.value.trim();
+      const prompt = els.prompt.value.trim();
+      if (!sessionId) {
+        setStatus("会话 ID 不能为空", "error");
+        return;
+      }
+      if (!prompt) {
+        setStatus("提示词不能为空", "error");
+        return;
+      }
+      const agents = await loadAgents().catch(() => []);
+      const agentStatus = agents.find((agent) => agent.name === els.agent.value);
+      if (agentStatus && !agentStatus.available) {
+        setStatus(`${els.agent.value} 不可用：${agentStatus.error || "找不到命令"}`, "error");
+        return;
+      }
+      const controller = new AbortController();
+      state.controller = controller;
+      setRunning(true);
+      rememberBinding();
+      els.output.textContent = "";
+      setStatus("正在流式输出", "ok");
+
+      const body = {
+        agent: els.agent.value,
+        prompt,
+      };
+      const cwd = els.cwd.value.trim();
+      if (cwd) {
+        body.cwd = cwd;
+      }
+
+      const debug = els.debug.checked ? "?debug=1" : "";
+      try {
+        const response = await fetch(`${apiBase()}/sessions/${encodeURIComponent(sessionId)}/runs/stream${debug}`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        if (!response.ok || !response.body) {
+          const text = await response.text();
+          throw new Error(text || `流式请求失败，状态码 ${response.status}`);
+        }
+        await readSSE(response.body);
+        state.sessionStarted = true;
+        setStatus("流式请求已结束", "ok");
+      } catch (error) {
+        if (error.name === "AbortError") {
+          appendEvent("client-abort", {ok: false, sessionId});
+          setStatus("已从页面停止流式请求");
+        } else {
+          appendEvent("client-error", {error: error.message});
+          setStatus(error.message, "error");
+        }
+      } finally {
+        setRunning(false);
+        state.controller = null;
+        await refreshHistory().catch((error) => {
+          appendEvent("history-error", {error: error.message});
+        });
+      }
+    }
+
+    async function readSSE(body) {
+      const reader = body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const {value, done} = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), {stream: !done});
+        buffer = buffer.replace(/\r\n/g, "\n");
+        let index;
+        while ((index = buffer.indexOf("\n\n")) !== -1) {
+          const block = buffer.slice(0, index);
+          buffer = buffer.slice(index + 2);
+          if (block.trim()) {
+            handleSSEBlock(block);
+          }
+        }
+        if (done) {
+          break;
+        }
+      }
+      if (buffer.trim()) {
+        handleSSEBlock(buffer);
+      }
+    }
+
+    function handleSSEBlock(block) {
+      let event = "message";
+      const data = [];
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) {
+          event = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          data.push(line.slice(5).trimStart());
+        }
+      }
+      const raw = data.join("\n");
+      let payload = raw;
+      try {
+        payload = JSON.parse(raw);
+      } catch (_) {
+        payload = raw;
+      }
+      appendEvent(event, payload);
+      if (event === "delta" && payload && typeof payload.delta === "string") {
+        appendOutput(payload.delta);
+      }
+      if (event === "error") {
+        setStatus(payload.error || "流式请求出错", "error");
+      }
+    }
+
+    els.send.addEventListener("click", () => sendStream().catch((error) => setStatus(error.message, "error")));
+    els.stop.addEventListener("click", () => {
+      if (state.controller) {
+        state.controller.abort();
+      }
+    });
+    els.clear.addEventListener("click", () => {
+      els.output.textContent = "";
+    });
+    els.clearEvents.addEventListener("click", () => {
+      els.events.innerHTML = "";
+    });
+    els.refresh.addEventListener("click", () => refreshHistory().catch((error) => setStatus(error.message, "error")));
+    els.deleteSession.addEventListener("click", () => deleteSession().catch((error) => setStatus(error.message, "error")));
+    els.newSession.addEventListener("click", resetCurrentSession);
+    els.agent.addEventListener("change", handleBindingChange);
+    els.cwd.addEventListener("change", handleBindingChange);
+
+    if (location.protocol === "file:") {
+      els.fileNotice.hidden = false;
+    }
+    resetCurrentSession();
+    loadAgents().catch(() => {});
+  </script>
+</body>
+</html>

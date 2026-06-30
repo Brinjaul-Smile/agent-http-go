@@ -102,6 +102,50 @@ func TestUnknownRoutesReturn404(t *testing.T) {
 	assertJSON(t, response, map[string]any{"ok": false, "error": "not found"})
 }
 
+func TestGETSessionStreamExampleRequiresSessionStore(t *testing.T) {
+	server := NewServer(ServerOptions{})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/examples/session-stream", nil)
+	server.ServeHTTP(response, request)
+
+	assertStatus(t, response, http.StatusNotFound)
+	assertJSON(t, response, map[string]any{"ok": false, "error": "not found"})
+}
+
+func TestGETSessionStreamExampleReturnsHTMLWhenSessionsAreEnabled(t *testing.T) {
+	server := NewServer(ServerOptions{
+		SessionStore: newMemorySessionStore(),
+	})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/examples/session-stream", nil)
+	server.ServeHTTP(response, request)
+
+	assertStatus(t, response, http.StatusOK)
+	if contentType := response.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
+		t.Fatalf("content-type = %q, want text/html", contentType)
+	}
+	if !strings.Contains(response.Body.String(), "会话流式调试台") {
+		t.Fatalf("example HTML missing title:\n%s", response.Body.String())
+	}
+}
+
+func TestGETSessionStreamExampleRedirectsTrailingSlash(t *testing.T) {
+	server := NewServer(ServerOptions{
+		SessionStore: newMemorySessionStore(),
+	})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/examples/session-stream/", nil)
+	server.ServeHTTP(response, request)
+
+	assertStatus(t, response, http.StatusMovedPermanently)
+	if location := response.Header().Get("Location"); location != "/examples/session-stream" {
+		t.Fatalf("location = %q, want /examples/session-stream", location)
+	}
+}
+
 func TestUnsupportedCodexMethodsReturn405(t *testing.T) {
 	server := NewServer(ServerOptions{})
 

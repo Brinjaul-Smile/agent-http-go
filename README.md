@@ -415,6 +415,14 @@ event: done
 data: {"exitCode":0,"ok":true,"sessionId":"chat-001"}
 ```
 
+启用 `session.enabled` 后，服务也会提供同源调试页面：
+
+```text
+http://127.0.0.1:8787/examples/session-stream
+```
+
+该页面用于本地验证 `POST /sessions/{sessionId}/runs/stream` 的流式输出、`debug=1` 事件、停止请求、session 删除和 `GET /sessions/{sessionId}` 持久化历史。
+
 ### `GET /sessions/{sessionId}`
 
 查询持久化会话和消息。

@@ -154,6 +154,8 @@ func (s *Server) routes() *http.ServeMux {
 		s.logRegisteredRoute(http.MethodDelete, "/sessions/{sessionId}", "agenthttp.(*Server).handleSession")
 		s.logRegisteredRoute(http.MethodPost, "/sessions/{sessionId}/runs", "agenthttp.(*Server).handleSession")
 		s.logRegisteredRoute(http.MethodPost, "/sessions/{sessionId}/runs/stream", "agenthttp.(*Server).handleSession")
+		s.registerRoute(mux, http.MethodGet, "/examples/session-stream", "agenthttp.(*Server).handleSessionStreamExample", s.handleSessionStreamExample)
+		s.registerRoute(mux, http.MethodGet, "/examples/session-stream/", "agenthttp.(*Server).handleSessionStreamExample", s.handleSessionStreamExample)
 	}
 	mux.HandleFunc("/", handleNotFound)
 	return mux
