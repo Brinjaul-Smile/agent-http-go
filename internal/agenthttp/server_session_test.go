@@ -6,9 +6,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPOSTSessionRunKeepsSuccessfulConversationHistory(t *testing.T) {
@@ -161,6 +163,65 @@ func TestPOSTSessionRunStreamKeepsHistoryAndWritesSession(t *testing.T) {
 	}
 	if len(messages) != 4 {
 		t.Fatalf("messages len = %d, want 4", len(messages))
+	}
+}
+
+func TestPOSTSessionRunStreamWithClaudeDoesNotExposeFinalResultAsSSE(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fake command is POSIX-only")
+	}
+
+	workspaceRoot := t.TempDir()
+	binDir := t.TempDir()
+	writeFakeCommand(t, binDir, "claude", fakeClaudeStreamScript())
+	store := newMemorySessionStore()
+	server := NewServer(ServerOptions{
+		WorkspaceRoot: workspaceRoot,
+		Env:           envWithPath(binDir),
+		Timeout:       5 * time.Second,
+		SessionStore:  store,
+	})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/sessions/chat-claude/runs/stream", jsonBody(t, map[string]any{
+		"agent":  "claude",
+		"prompt": "hello",
+	}))
+	server.ServeHTTP(response, request)
+
+	assertStatus(t, response, http.StatusOK)
+	body := response.Body.String()
+	for _, expected := range []string{
+		"event: start\n",
+		"event: delta\n",
+		`"delta":"stream:"`,
+		`"delta":"hello"`,
+		"event: done\n",
+		`"sessionId":"chat-claude"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("SSE body missing %q in:\n%s", expected, body)
+		}
+	}
+	for _, unexpected := range []string{
+		"event: result\n",
+		`"output":"final:hello"`,
+		`"delta":"final:hello"`,
+	} {
+		if strings.Contains(body, unexpected) {
+			t.Fatalf("SSE body unexpectedly contains %q in:\n%s", unexpected, body)
+		}
+	}
+
+	messages, err := store.ListMessages(context.Background(), "chat-claude", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("messages len = %d, want 2", len(messages))
+	}
+	if messages[1].Role != SessionRoleAssistant || messages[1].Content != "final:hello" {
+		t.Fatalf("assistant message = %#v, want persisted final result", messages[1])
 	}
 }
 

@@ -83,6 +83,10 @@ type claudeJSONLDeltaParser struct {
 	// lastEmittedText 记录已向下游发出的正文累计值。
 	// delta 路和快照路都读写同一个字段，保证彼此不重发已经推送过的内容。
 	lastEmittedText string
+	// sawExplicitDelta 标记 Claude 已经开始发送 content_block_delta 正文增量。
+	// 之后若最终 assistant 快照与已发文本不是前缀关系，只能说明快照发生了修订，
+	// SSE 无法回改已发送内容，因此不能把整段快照当成新的 delta 重发。
+	sawExplicitDelta bool
 }
 
 // newClaudeJSONLDeltaParser 创建 Claude stream-json delta 解析器。
@@ -102,6 +106,7 @@ func (p *claudeJSONLDeltaParser) Deltas(line string) []string {
 
 	// content_block_delta 路：提取 delta 字段，与 lastEmittedText 做归一化去重。
 	if deltas := extractExplicitDeltas(payload); len(deltas) > 0 {
+		p.sawExplicitDelta = true
 		normalized := make([]string, 0, len(deltas))
 		for _, delta := range deltas {
 			nextDelta, nextText := normalizeTextDelta(p.lastEmittedText, delta)
@@ -136,6 +141,12 @@ func (p *claudeJSONLDeltaParser) Deltas(line string) []string {
 	if len(text) <= len(p.lastEmittedText) {
 		// 快照落后于 delta（旧快照姗姗来迟），静默丢弃，保持状态不变。
 		// 若此处更新 lastEmittedText 会导致状态倒退，破坏后续去重逻辑。
+		return nil
+	}
+	if p.sawExplicitDelta {
+		// Claude 的最终 assistant 快照可能会补词或改写标点，导致它不是已发送
+		// delta 的简单前缀扩展。SSE 只能追加不能回改；这里丢弃快照，避免把
+		// 最终全量文本作为最后一个 delta 重复推给客户端。
 		return nil
 	}
 	// 快照内容与已发送文本完全不同（极端异常：内容被截断重置）。

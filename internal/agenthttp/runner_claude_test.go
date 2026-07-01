@@ -220,6 +220,34 @@ func TestClaudeJSONLDeltaParserStaleSnapshotIsDiscarded(t *testing.T) {
 	}
 }
 
+func TestClaudeJSONLDeltaParserDoesNotRepeatCorrectedFinalAssistantSnapshot(t *testing.T) {
+	parser := newClaudeJSONLDeltaParser()
+
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"我是 Claude。具体来说，"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"通过 Claude Agent SDK 运行。"}}}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"我是 Claude。具体来说，我是通过 Claude Agent SDK 运行。"}]}}`,
+		`{"type":"result","result":"我是 Claude。具体来说，我是通过 Claude Agent SDK 运行。"}`,
+	}
+
+	var deltas []string
+	for _, line := range lines {
+		deltas = append(deltas, parser.Deltas(line)...)
+	}
+
+	if len(deltas) != 2 {
+		t.Fatalf("deltas = %#v, want only the two explicit deltas", deltas)
+	}
+	if got := strings.Join(deltas, ""); got != "我是 Claude。具体来说，通过 Claude Agent SDK 运行。" {
+		t.Fatalf("deltas joined = %q", got)
+	}
+	for _, delta := range deltas {
+		if delta == "我是 Claude。具体来说，我是通过 Claude Agent SDK 运行。" {
+			t.Fatalf("final assistant snapshot was repeated as delta: %#v", deltas)
+		}
+	}
+}
+
 func TestRunClaudeReportsClearErrorWhenClaudeIsNotInPath(t *testing.T) {
 	workspaceRoot := t.TempDir()
 
