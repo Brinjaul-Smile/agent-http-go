@@ -18,8 +18,10 @@
 
 - Go 版本：`1.25.0`。
 - 配置解析：`gopkg.in/yaml.v3`。
-- 持久化会话数据库：SQLite。
-- SQLite Go 驱动：`modernc.org/sqlite`，纯 Go 实现，不需要单独部署数据库服务。
+- 持久化会话数据库：SQLite 或 MySQL。
+- ORM：`gorm.io/gorm`。
+- GORM 数据库驱动：`gorm.io/driver/sqlite`、`gorm.io/driver/mysql`。
+- MySQL DSN 解析：`github.com/go-sql-driver/mysql`。
 
 ## 启动服务
 
@@ -75,6 +77,8 @@ session:
   maxHistorySize: 64KiB
   sqlite:
     path: ./data/agent-http.db
+  mysql:
+    dsn: ""
 ```
 
 如果需要加载其它配置文件，可以使用 `CONFIG_FILE`：
@@ -198,7 +202,7 @@ server:
 
 ### 持久化会话
 
-`session` 控制长对话持久化。默认开启，使用本地 SQLite 文件，不需要单独部署数据库服务。当前实现使用纯 Go SQLite 驱动 `modernc.org/sqlite`。
+`session` 控制长对话持久化。默认开启，使用 GORM 写入本地 SQLite 文件，不需要单独部署数据库服务；也可以切换到 MySQL。
 
 ```yaml
 session:
@@ -208,17 +212,36 @@ session:
   maxHistorySize: 64KiB
   sqlite:
     path: ./data/agent-http.db
+  mysql:
+    dsn: ""
+```
+
+MySQL 示例：
+
+```yaml
+session:
+  enabled: true
+  driver: mysql
+  mysql:
+    dsn: user:pass@tcp(127.0.0.1:3306)/agent_http?charset=utf8mb4
 ```
 
 字段说明：
 
 - `enabled`：是否启用 `/sessions/{sessionId}` 系列接口。
-- `driver`：当前支持 `sqlite`；代码通过 `SessionStore` 抽象保留后续 RDS 扩展空间。
+- `driver`：当前支持 `sqlite`、`mysql`。
 - `maxTurns`：拼接历史上下文时最多取最近多少轮成功对话。
 - `maxHistorySize`：拼接历史上下文的最大大小，支持 `B`、`KiB`、`MiB`、`GiB`。
-- `sqlite.path`：SQLite 数据库文件路径。首次启动会自动创建目录、数据库文件和表。SQLite 连接默认启用 `foreign_keys`、`busy_timeout=5000` 和 WAL journal mode。
+- `sqlite.path`：SQLite 数据库文件路径。首次启动会自动创建目录，并通过 GORM AutoMigrate 创建表。SQLite 连接默认启用 `foreign_keys`、`busy_timeout=5000` 和 WAL journal mode。
+- `mysql.dsn`：MySQL 连接串，仅在 `driver: mysql` 时使用；服务会自动启用 `parseTime=true`。
 
 修改配置后需要重启服务生效。
+
+如果需要跑 MySQL 存储集成测试，可以提供测试库 DSN：
+
+```sh
+AGENT_HTTP_MYSQL_TEST_DSN='user:pass@tcp(127.0.0.1:3306)/agent_http?charset=utf8mb4' go test ./internal/agenthttp
+```
 
 ## 接口文档
 
@@ -264,7 +287,7 @@ http://127.0.0.1:8787/examples/session-stream
 - SSE 接口默认推送 `start`、`delta`、`done`、`error` 事件；`delta` 只来自 agent CLI 实际输出的正文增量事件。
 - `codex` 流式输出依赖 `codex app-server` 的 experimental 协议；如果当前 Codex CLI 版本未输出 `item/agentMessage/delta`，服务不会用最终结果做兜底假流式。
 - SSE 接口只有在 `debug=1` 时才会额外推送 `result` 事件，避免客户端把最终 `output` 追加到已流式展示的正文里。
-- 持久化会话使用 SQLite 本地文件；`session.enabled: false` 时不会注册 `/sessions/{sessionId}` 系列接口。
+- 持久化会话可使用 SQLite 本地文件或 MySQL；`session.enabled: false` 时不会注册 `/sessions/{sessionId}` 系列接口。
 - 持久化会话只保留并查询本地数据库中的历史，不维护常驻 CLI 进程。
 - 超时返回 HTTP `504`。
 - 未知路由返回 HTTP `404`。

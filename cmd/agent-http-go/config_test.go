@@ -83,6 +83,9 @@ func TestLoadConfigUsesDefaultsWhenConfigFileIsMissing(t *testing.T) {
 	if config.SessionSQLitePath != "./data/agent-http.db" {
 		t.Fatalf("sessionSQLitePath = %q, want ./data/agent-http.db", config.SessionSQLitePath)
 	}
+	if config.SessionMySQLDSN != "" {
+		t.Fatalf("sessionMySQLDSN = %q, want empty", config.SessionMySQLDSN)
+	}
 	if config.SessionMaxTurns != 20 {
 		t.Fatalf("sessionMaxTurns = %d, want 20", config.SessionMaxTurns)
 	}
@@ -179,6 +182,28 @@ func TestLoadConfigReadsServerSettingsFromYAML(t *testing.T) {
 	}
 }
 
+func TestLoadConfigReadsMySQLSessionSettingsFromYAML(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("session:\n  driver: mysql\n  mysql:\n    dsn: user:pass@tcp(127.0.0.1:3306)/agent_http\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	config, err := LoadConfig(ConfigOptions{
+		Path: configPath,
+		Env:  map[string]string{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if config.SessionDriver != "mysql" {
+		t.Fatalf("sessionDriver = %q, want mysql", config.SessionDriver)
+	}
+	if config.SessionMySQLDSN != "user:pass@tcp(127.0.0.1:3306)/agent_http" {
+		t.Fatalf("sessionMySQLDSN = %q", config.SessionMySQLDSN)
+	}
+}
+
 func TestLoadConfigRejectsInvalidRunnerTimeout(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("runner:\n  timeout: not-a-duration\n"), 0o644); err != nil {
@@ -271,7 +296,7 @@ func TestLoadConfigRejectsInvalidLogFormat(t *testing.T) {
 
 func TestLoadConfigRejectsUnsupportedSessionDriver(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(configPath, []byte("session:\n  driver: mysql\n"), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte("session:\n  driver: postgres\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

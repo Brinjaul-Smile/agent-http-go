@@ -18,10 +18,10 @@ server:
   logRoutes: false
   # 是否暴露 /swagger 和 /openapi.yaml。
   swagger:
-    enabled: false
+    enabled: true
   # 是否暴露 /examples 调试页面。
   examples:
-    enabled: false
+    enabled: true
 
 # Agent 子进程执行配置。
 runner:
@@ -58,7 +58,7 @@ log:
 session:
   # 是否启用 /sessions 系列接口的持久会话能力。
   enabled: true
-  # 会话存储驱动；当前仅支持 sqlite。
+  # 会话存储驱动；支持 sqlite、mysql。
   driver: sqlite
   # 每次 session run 最多取多少轮成功历史拼进 prompt。
   maxTurns: 20
@@ -68,3 +68,7 @@ session:
   sqlite:
     # SQLite 数据库文件路径。
     path: ./data/agent-http.db
+  # MySQL 会话存储配置，仅在 driver: mysql 时使用。
+  mysql:
+    # go-sql-driver/mysql DSN；服务会自动启用 parseTime=true。
+    dsn: ""

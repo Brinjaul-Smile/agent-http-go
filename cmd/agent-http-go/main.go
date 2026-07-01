@@ -106,6 +106,8 @@ func newSessionStore(config Config) (closeableSessionStore, error) {
 	switch config.SessionDriver {
 	case "sqlite":
 		return agenthttp.OpenSQLiteSessionStore(config.SessionSQLitePath)
+	case "mysql":
+		return agenthttp.OpenMySQLSessionStore(config.SessionMySQLDSN)
 	default:
 		return nil, fmt.Errorf("unsupported session driver: %s", config.SessionDriver)
 	}

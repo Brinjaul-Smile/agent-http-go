@@ -99,7 +99,7 @@ func TestSQLiteSessionStoreConfiguresConnectionPragmas(t *testing.T) {
 	defer store.Close()
 
 	var busyTimeout int
-	if err := store.db.QueryRowContext(context.Background(), `PRAGMA busy_timeout`).Scan(&busyTimeout); err != nil {
+	if err := store.sqlDB.QueryRowContext(context.Background(), `PRAGMA busy_timeout`).Scan(&busyTimeout); err != nil {
 		t.Fatal(err)
 	}
 	if busyTimeout != 5000 {
@@ -107,7 +107,7 @@ func TestSQLiteSessionStoreConfiguresConnectionPragmas(t *testing.T) {
 	}
 
 	var journalMode string
-	if err := store.db.QueryRowContext(context.Background(), `PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+	if err := store.sqlDB.QueryRowContext(context.Background(), `PRAGMA journal_mode`).Scan(&journalMode); err != nil {
 		t.Fatal(err)
 	}
 	if journalMode != "wal" {

@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -34,5 +35,18 @@ func TestRunHTTPServerStopsOnContextCancel(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("server did not stop after context cancellation")
+	}
+}
+
+func TestNewSessionStoreUsesMySQLDriver(t *testing.T) {
+	_, err := newSessionStore(Config{
+		SessionEnabled: true,
+		SessionDriver:  "mysql",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "mysql session dsn must not be empty") {
+		t.Fatalf("error = %v", err)
 	}
 }

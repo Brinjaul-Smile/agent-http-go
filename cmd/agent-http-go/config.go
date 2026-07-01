@@ -64,11 +64,13 @@ type Config struct {
 	// LogLevel 和 LogFormat 控制 slog 输出级别和 text/json 格式。
 	LogLevel  slog.Level
 	LogFormat string
-	// SessionEnabled 控制是否启用持久会话；SessionDriver 当前只支持 sqlite。
+	// SessionEnabled 控制是否启用持久会话；SessionDriver 支持 sqlite 和 mysql。
 	SessionEnabled bool
 	SessionDriver  string
 	// SessionSQLitePath 是 sqlite 会话库文件路径。
 	SessionSQLitePath string
+	// SessionMySQLDSN 是 MySQL 会话库连接串。
+	SessionMySQLDSN string
 	// SessionMaxTurns 和 SessionMaxHistoryBytes 控制注入 runner prompt 的历史窗口。
 	SessionMaxTurns        int
 	SessionMaxHistoryBytes int
@@ -160,7 +162,7 @@ type logConfig struct {
 type sessionConfig struct {
 	// Enabled 使用指针区分“未配置”和显式关闭 false。
 	Enabled *bool `yaml:"enabled"`
-	// Driver 当前只支持 sqlite。
+	// Driver 支持 sqlite 和 mysql。
 	Driver string `yaml:"driver"`
 	// MaxTurns 控制最多取多少轮成功历史拼进下一次 prompt。
 	MaxTurns int `yaml:"maxTurns"`
@@ -168,12 +170,19 @@ type sessionConfig struct {
 	MaxHistorySize  string              `yaml:"maxHistorySize"`
 	MaxHistoryBytes string              `yaml:"maxHistoryBytes"`
 	SQLite          sessionSQLiteConfig `yaml:"sqlite"`
+	MySQL           sessionMySQLConfig  `yaml:"mysql"`
 }
 
 // sessionSQLiteConfig 对应 YAML 中的 session.sqlite 配置段。
 type sessionSQLiteConfig struct {
 	// path 是 sqlite 数据库文件路径。
 	Path string `yaml:"path"`
+}
+
+// sessionMySQLConfig 对应 YAML 中的 session.mysql 配置段。
+type sessionMySQLConfig struct {
+	// dsn 是 go-sql-driver/mysql 连接串。
+	DSN string `yaml:"dsn"`
 }
 
 // LoadConfig 按默认值、YAML 文件、环境变量的顺序加载运行配置。
@@ -307,6 +316,9 @@ func LoadConfig(options ConfigOptions) (Config, error) {
 	if fileConfig.Session.SQLite.Path != "" {
 		config.SessionSQLitePath = fileConfig.Session.SQLite.Path
 	}
+	if fileConfig.Session.MySQL.DSN != "" {
+		config.SessionMySQLDSN = fileConfig.Session.MySQL.DSN
+	}
 	if fileConfig.Session.MaxTurns != 0 {
 		if fileConfig.Session.MaxTurns <= 0 {
 			return Config{}, fmt.Errorf("session maxTurns must be positive")
@@ -402,11 +414,11 @@ func parseLogFormat(value string) (string, error) {
 	}
 }
 
-// parseSessionDriver 校验持久会话存储驱动；当前实现 sqlite，接口保留 RDS 扩展空间。
+// parseSessionDriver 校验持久会话存储驱动。
 func parseSessionDriver(value string) (string, error) {
 	driver := strings.ToLower(strings.TrimSpace(value))
 	switch driver {
-	case "sqlite":
+	case "sqlite", "mysql":
 		return driver, nil
 	default:
 		return "", fmt.Errorf("unsupported session driver: %s", value)
