@@ -486,6 +486,11 @@
       els.output.scrollTop = els.output.scrollHeight;
     }
 
+    function appendErrorOutput(message) {
+      const prefix = els.output.textContent ? "\n\n错误：" : "错误：";
+      appendOutput(`${prefix}${message || "流式请求出错"}`);
+    }
+
     function resetCurrentSession() {
       els.sessionId.value = newSessionId();
       state.sessionStarted = false;
@@ -674,9 +679,13 @@
           const text = await response.text();
           throw new Error(text || `流式请求失败，状态码 ${response.status}`);
         }
-        await readSSE(response.body);
+        const outcome = await readSSE(response.body);
         state.sessionStarted = true;
-        setStatus("流式请求已结束", "ok");
+        if (outcome.ok) {
+          setStatus("流式请求已结束", "ok");
+        } else {
+          setStatus(outcome.error || "流式请求出错", "error");
+        }
       } catch (error) {
         if (error.name === "AbortError") {
           appendEvent("client-abort", {ok: false, sessionId});
@@ -698,6 +707,7 @@
       const reader = body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      const outcome = {ok: true, error: ""};
       while (true) {
         const {value, done} = await reader.read();
         buffer += decoder.decode(value || new Uint8Array(), {stream: !done});
@@ -707,7 +717,7 @@
           const block = buffer.slice(0, index);
           buffer = buffer.slice(index + 2);
           if (block.trim()) {
-            handleSSEBlock(block);
+            updateStreamOutcome(outcome, handleSSEBlock(block));
           }
         }
         if (done) {
@@ -715,8 +725,9 @@
         }
       }
       if (buffer.trim()) {
-        handleSSEBlock(buffer);
+        updateStreamOutcome(outcome, handleSSEBlock(buffer));
       }
+      return outcome;
     }
 
     function handleSSEBlock(block) {
@@ -741,7 +752,24 @@
         appendOutput(payload.delta);
       }
       if (event === "error") {
-        setStatus(payload.error || "流式请求出错", "error");
+        const message = payload.error || "流式请求出错";
+        appendErrorOutput(message);
+        setStatus(message, "error");
+      }
+      if (event === "done" && payload && payload.ok === false && payload.error) {
+        appendErrorOutput(payload.error);
+        setStatus(payload.error, "error");
+      }
+      return {event, payload};
+    }
+
+    function updateStreamOutcome(outcome, parsed) {
+      if (!parsed || !parsed.payload || typeof parsed.payload !== "object") {
+        return;
+      }
+      if (parsed.event === "error" || (parsed.event === "done" && parsed.payload.ok === false)) {
+        outcome.ok = false;
+        outcome.error = parsed.payload.error || outcome.error || "流式请求出错";
       }
     }
 
