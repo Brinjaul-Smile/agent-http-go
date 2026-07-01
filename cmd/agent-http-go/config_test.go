@@ -38,6 +38,12 @@ func TestLoadConfigUsesDefaultsWhenConfigFileIsMissing(t *testing.T) {
 	if config.LogRoutes {
 		t.Fatal("logRoutes = true, want false")
 	}
+	if config.SwaggerEnabled {
+		t.Fatal("swaggerEnabled = true, want false")
+	}
+	if config.ExamplesEnabled {
+		t.Fatal("examplesEnabled = true, want false")
+	}
 	if config.RunnerTimeout != 10*time.Minute {
 		t.Fatalf("runnerTimeout = %s, want 10m0s", config.RunnerTimeout)
 	}
@@ -87,7 +93,7 @@ func TestLoadConfigUsesDefaultsWhenConfigFileIsMissing(t *testing.T) {
 
 func TestLoadConfigReadsServerSettingsFromYAML(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(configPath, []byte("server:\n  host: 0.0.0.0\n  port: \"8080\"\n  shutdownTimeout: 3s\n  readHeaderTimeout: 4s\n  readTimeout: 45s\n  idleTimeout: 90s\n  logRoutes: true\n  maxBodySize: 2MiB\nrunner:\n  timeout: 2m30s\n  codex:\n    command: /opt/bin/codex\n    approvalPolicy: on-request\n    sandbox: read-only\n    ephemeral: false\n  claude:\n    command: /opt/bin/claude\nworkspace:\n  root: ./workspace\nlog:\n  level: debug\n  format: json\nsession:\n  enabled: false\n  driver: sqlite\n  maxTurns: 12\n  maxHistorySize: 32KiB\n  sqlite:\n    path: ./sessions.db\n"), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte("server:\n  host: 0.0.0.0\n  port: \"8080\"\n  shutdownTimeout: 3s\n  readHeaderTimeout: 4s\n  readTimeout: 45s\n  idleTimeout: 90s\n  logRoutes: true\n  swagger:\n    enabled: true\n  examples:\n    enabled: true\n  maxBodySize: 2MiB\nrunner:\n  timeout: 2m30s\n  codex:\n    command: /opt/bin/codex\n    approvalPolicy: on-request\n    sandbox: read-only\n    ephemeral: false\n  claude:\n    command: /opt/bin/claude\nworkspace:\n  root: ./workspace\nlog:\n  level: debug\n  format: json\nsession:\n  enabled: false\n  driver: sqlite\n  maxTurns: 12\n  maxHistorySize: 32KiB\n  sqlite:\n    path: ./sessions.db\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,6 +125,12 @@ func TestLoadConfigReadsServerSettingsFromYAML(t *testing.T) {
 	}
 	if !config.LogRoutes {
 		t.Fatal("logRoutes = false, want true")
+	}
+	if !config.SwaggerEnabled {
+		t.Fatal("swaggerEnabled = false, want true")
+	}
+	if !config.ExamplesEnabled {
+		t.Fatal("examplesEnabled = false, want true")
 	}
 	if config.RunnerTimeout != 150*time.Second {
 		t.Fatalf("runnerTimeout = %s, want 2m30s", config.RunnerTimeout)

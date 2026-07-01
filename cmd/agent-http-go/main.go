@@ -73,6 +73,8 @@ func serve(ctx context.Context, config Config, logger *slog.Logger) error {
 		CodexAppServer: codexAppServerOptions,
 		MaxBodyBytes:   config.MaxBodyBytes,
 		LogRoutes:      config.LogRoutes,
+		EnableSwagger:  config.SwaggerEnabled,
+		EnableExamples: config.ExamplesEnabled,
 		Logger:         logger,
 		SessionStore:   sessionStore,
 		SessionOptions: agenthttp.SessionRunOptions{MaxTurns: config.SessionMaxTurns, MaxHistoryBytes: config.SessionMaxHistoryBytes},

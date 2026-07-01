@@ -145,8 +145,31 @@ func (s *SQLiteSessionStore) CreateSession(ctx context.Context, create SessionCr
 	return session, nil
 }
 
-// ListMessages 返回完整消息历史，用于 GET /sessions/{sessionId} 观察和排查。
-func (s *SQLiteSessionStore) ListMessages(ctx context.Context, sessionID string) ([]SessionMessage, error) {
+// ListMessages 返回消息历史，用于 GET /sessions/{sessionId} 观察和排查。
+// limit 大于 0 时返回最近 limit 条消息，并保持时间升序。
+func (s *SQLiteSessionStore) ListMessages(ctx context.Context, sessionID string, limit int) ([]SessionMessage, error) {
+	if limit > 0 {
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT id, session_id, role, content, status, created_at
+			FROM (
+				SELECT id, session_id, role, content, status, created_at
+				FROM session_messages
+				WHERE session_id = ?
+				ORDER BY id DESC
+				LIMIT ?
+			)
+			ORDER BY id ASC`,
+			sessionID,
+			limit,
+		)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		return scanSessionMessages(rows)
+	}
+
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, session_id, role, content, status, created_at FROM session_messages WHERE session_id = ? ORDER BY id ASC`,
 		sessionID,

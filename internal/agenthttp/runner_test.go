@@ -64,16 +64,64 @@ func TestResolveWorkspaceCwdAllowsWorkspaceRootAndChildren(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if root != workspaceRoot {
-		t.Fatalf("root = %q, want %q", root, workspaceRoot)
+	realWorkspaceRoot, err := filepath.EvalSymlinks(workspaceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root != realWorkspaceRoot {
+		t.Fatalf("root = %q, want %q", root, realWorkspaceRoot)
 	}
 
 	resolvedChild, err := ResolveWorkspaceCwd(child, workspaceRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolvedChild != child {
-		t.Fatalf("child = %q, want %q", resolvedChild, child)
+	realChild, err := filepath.EvalSymlinks(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolvedChild != realChild {
+		t.Fatalf("child = %q, want %q", resolvedChild, realChild)
+	}
+}
+
+func TestResolveWorkspaceCwdRejectsSymlinkOutsideWorkspace(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(workspaceRoot, "outside-link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ResolveWorkspaceCwd(link, workspaceRoot)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	var requestErr *RequestError
+	if !errors.As(err, &requestErr) {
+		t.Fatalf("expected RequestError, got %T", err)
+	}
+	if requestErr.Message != "cwd must be inside workspace" {
+		t.Fatalf("message = %q", requestErr.Message)
+	}
+}
+
+func TestResolveWorkspaceCwdRejectsMissingCwd(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	missing := filepath.Join(workspaceRoot, "missing")
+
+	_, err := ResolveWorkspaceCwd(missing, workspaceRoot)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	var requestErr *RequestError
+	if !errors.As(err, &requestErr) {
+		t.Fatalf("expected RequestError, got %T", err)
+	}
+	if requestErr.Message != "cwd must be an existing path inside workspace" {
+		t.Fatalf("message = %q", requestErr.Message)
 	}
 }
 

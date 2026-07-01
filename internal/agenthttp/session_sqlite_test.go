@@ -43,12 +43,22 @@ func TestSQLiteSessionStorePersistsAndDeletesSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	messages, err := store.ListMessages(ctx, "chat-1")
+	messages, err := store.ListMessages(ctx, "chat-1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(messages) != 4 {
 		t.Fatalf("messages len = %d, want 4", len(messages))
+	}
+	limitedMessages, err := store.ListMessages(ctx, "chat-1", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(limitedMessages) != 3 {
+		t.Fatalf("limited messages len = %d, want 3", len(limitedMessages))
+	}
+	if limitedMessages[0].Content != "answer" || limitedMessages[2].Content != "failed" {
+		t.Fatalf("limited messages = %#v", limitedMessages)
 	}
 
 	contextMessages, err := store.ListContextMessages(ctx, "chat-1", 10)
@@ -72,7 +82,7 @@ func TestSQLiteSessionStorePersistsAndDeletesSession(t *testing.T) {
 	if ok {
 		t.Fatal("session still exists after delete")
 	}
-	messages, err = store.ListMessages(ctx, "chat-1")
+	messages, err = store.ListMessages(ctx, "chat-1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

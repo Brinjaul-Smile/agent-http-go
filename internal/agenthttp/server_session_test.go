@@ -155,7 +155,7 @@ func TestPOSTSessionRunStreamKeepsHistoryAndWritesSession(t *testing.T) {
 		t.Fatalf("second prompt did not include history:\n%s", prompts[1])
 	}
 
-	messages, err := store.ListMessages(context.Background(), "chat-1")
+	messages, err := store.ListMessages(context.Background(), "chat-1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,6 +236,58 @@ func TestPOSTSessionRunDefaultsToClaudeAgent(t *testing.T) {
 	}
 }
 
+func TestPOSTSessionRunStreamDefaultsToClaudeAgent(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	store := newMemorySessionStore()
+	server := NewServer(ServerOptions{
+		WorkspaceRoot: workspaceRoot,
+		SessionStore:  store,
+		Runners: map[string]Runner{
+			"codex": func(context.Context, RunRequest) (RunResult, error) {
+				return RunResult{}, errors.New("sync codex runner should not be called")
+			},
+			"claude": func(context.Context, RunRequest) (RunResult, error) {
+				return RunResult{}, errors.New("sync claude runner should not be called")
+			},
+		},
+		StreamRunners: map[string]StreamRunner{
+			"codex": func(context.Context, RunRequest, StreamWriter) (RunResult, error) {
+				return RunResult{}, errors.New("codex stream runner should not be called")
+			},
+			"claude": func(_ context.Context, request RunRequest, writer StreamWriter) (RunResult, error) {
+				if request.Agent != DefaultAgent {
+					return RunResult{}, errors.New("session stream request should default to claude")
+				}
+				if err := writer.WriteDelta("claude:" + request.Prompt); err != nil {
+					return RunResult{}, err
+				}
+				return RunResult{OK: true, Output: "claude:" + request.Prompt}, nil
+			},
+		},
+	})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/sessions/chat-1/runs/stream", jsonBody(t, map[string]any{
+		"prompt": "hello",
+	}))
+	server.ServeHTTP(response, request)
+
+	assertStatus(t, response, http.StatusOK)
+	if !strings.Contains(response.Body.String(), `"delta":"claude:hello"`) {
+		t.Fatalf("SSE body missing claude delta:\n%s", response.Body.String())
+	}
+	session, ok, err := store.GetSession(context.Background(), "chat-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("session was not created")
+	}
+	if session.Agent != DefaultAgent {
+		t.Fatalf("session agent = %q, want %q", session.Agent, DefaultAgent)
+	}
+}
+
 func TestPOSTSessionRunStoresFailedTurnButSkipsItFromContext(t *testing.T) {
 	workspaceRoot := t.TempDir()
 	store := newMemorySessionStore()
@@ -281,7 +333,7 @@ func TestPOSTSessionRunStoresFailedTurnButSkipsItFromContext(t *testing.T) {
 		t.Fatalf("second prompt = %q, want failed history skipped", prompts[1])
 	}
 
-	messages, err := store.ListMessages(context.Background(), "chat-1")
+	messages, err := store.ListMessages(context.Background(), "chat-1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,4 +396,98 @@ func TestGETAndDELETESession(t *testing.T) {
 	server.ServeHTTP(missingResponse, missingRequest)
 	assertStatus(t, missingResponse, http.StatusNotFound)
 	assertJSON(t, missingResponse, map[string]any{"ok": false, "error": "session not found"})
+}
+
+func TestGETSessionDefaultsToRecentMessagesAndSupportsLimitAll(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	store := newMemorySessionStore()
+	server := NewServer(ServerOptions{
+		WorkspaceRoot: workspaceRoot,
+		SessionStore:  store,
+		Runners: map[string]Runner{
+			"codex": func(_ context.Context, request RunRequest) (RunResult, error) {
+				return RunResult{OK: true, Output: "answer:" + request.Prompt}, nil
+			},
+		},
+	})
+
+	for i := 0; i < 60; i++ {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/sessions/chat-1/runs", jsonBody(t, map[string]any{
+			"agent":  "codex",
+			"prompt": "turn-" + strconv.Itoa(i),
+		}))
+		server.ServeHTTP(response, request)
+		assertStatus(t, response, http.StatusOK)
+	}
+
+	defaultResponse := httptest.NewRecorder()
+	defaultRequest := httptest.NewRequest(http.MethodGet, "/sessions/chat-1", nil)
+	server.ServeHTTP(defaultResponse, defaultRequest)
+	assertStatus(t, defaultResponse, http.StatusOK)
+	defaultMessages := sessionMessagesFromResponse(t, defaultResponse)
+	if len(defaultMessages) != defaultSessionListLimit {
+		t.Fatalf("default messages len = %d, want %d", len(defaultMessages), defaultSessionListLimit)
+	}
+
+	allResponse := httptest.NewRecorder()
+	allRequest := httptest.NewRequest(http.MethodGet, "/sessions/chat-1?limit=all", nil)
+	server.ServeHTTP(allResponse, allRequest)
+	assertStatus(t, allResponse, http.StatusOK)
+	allMessages := sessionMessagesFromResponse(t, allResponse)
+	if len(allMessages) != 120 {
+		t.Fatalf("all messages len = %d, want 120", len(allMessages))
+	}
+
+	limitedResponse := httptest.NewRecorder()
+	limitedRequest := httptest.NewRequest(http.MethodGet, "/sessions/chat-1?limit=3", nil)
+	server.ServeHTTP(limitedResponse, limitedRequest)
+	assertStatus(t, limitedResponse, http.StatusOK)
+	limitedMessages := sessionMessagesFromResponse(t, limitedResponse)
+	if len(limitedMessages) != 3 {
+		t.Fatalf("limited messages len = %d, want 3", len(limitedMessages))
+	}
+}
+
+func TestGETSessionRejectsInvalidLimit(t *testing.T) {
+	server := NewServer(ServerOptions{
+		SessionStore: newMemorySessionStore(),
+		Runners: map[string]Runner{
+			"codex": func(context.Context, RunRequest) (RunResult, error) {
+				return RunResult{OK: true, Output: "answer"}, nil
+			},
+		},
+	})
+
+	runResponse := httptest.NewRecorder()
+	runRequest := httptest.NewRequest(http.MethodPost, "/sessions/chat-1/runs", jsonBody(t, map[string]any{
+		"agent":  "codex",
+		"prompt": "hello",
+	}))
+	server.ServeHTTP(runResponse, runRequest)
+	assertStatus(t, runResponse, http.StatusOK)
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/sessions/chat-1?limit=nope", nil)
+	server.ServeHTTP(response, request)
+
+	assertStatus(t, response, http.StatusBadRequest)
+	assertJSON(t, response, map[string]any{
+		"ok":    false,
+		"error": "limit must be a positive integer or all",
+	})
+}
+
+func sessionMessagesFromResponse(t *testing.T, response *httptest.ResponseRecorder) []any {
+	t.Helper()
+
+	var body map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	messages, ok := body["messages"].([]any)
+	if !ok {
+		t.Fatalf("messages = %#v, want array", body["messages"])
+	}
+	return messages
 }

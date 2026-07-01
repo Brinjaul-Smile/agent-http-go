@@ -14,6 +14,8 @@ const (
 	defaultSessionMaxHistoryBytes = 64 * 1024
 	// maxSessionIDBytes 是 sessionId 允许的最长字节数。
 	maxSessionIDBytes = 128
+	// defaultSessionListLimit 是 GET /sessions/{sessionId} 默认返回的最近消息条数。
+	defaultSessionListLimit = 100
 
 	// SessionRoleUser 表示消息来自用户。
 	SessionRoleUser = "user"
@@ -33,7 +35,7 @@ const (
 type SessionStore interface {
 	GetSession(ctx context.Context, id string) (Session, bool, error)
 	CreateSession(ctx context.Context, session SessionCreate) (Session, error)
-	ListMessages(ctx context.Context, sessionID string) ([]SessionMessage, error)
+	ListMessages(ctx context.Context, sessionID string, limit int) ([]SessionMessage, error)
 	// ListContextMessages 只返回可参与上下文拼接的消息，当前语义是成功 turn。
 	ListContextMessages(ctx context.Context, sessionID string, maxMessages int) ([]SessionMessage, error)
 	AppendTurn(ctx context.Context, turn SessionTurn) error

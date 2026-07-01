@@ -27,6 +27,8 @@ type ServerOptions struct {
 	CodexAppServer  CodexAppServerOptions
 	MaxBodyBytes    int64
 	LogRoutes       bool
+	EnableSwagger   bool
+	EnableExamples  bool
 	Logger          *slog.Logger
 }
 
@@ -43,6 +45,8 @@ type Server struct {
 	mux             *http.ServeMux
 	maxBodyBytes    int64
 	logRoutes       bool
+	enableSwagger   bool
+	enableExamples  bool
 	logger          *slog.Logger
 }
 
@@ -127,6 +131,8 @@ func NewServer(options ServerOptions) *Server {
 		workspaceRoot:   workspaceRoot,
 		maxBodyBytes:    serverMaxBodyBytes(options.MaxBodyBytes),
 		logRoutes:       options.LogRoutes,
+		enableSwagger:   options.EnableSwagger,
+		enableExamples:  options.EnableExamples,
 		logger:          options.Logger,
 	}
 	if server.sessionStore != nil {
@@ -145,6 +151,11 @@ func (s *Server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	s.registerRoute(mux, http.MethodGet, "/health", "agenthttp.(*Server).handleHealth", s.handleHealth)
 	s.registerRoute(mux, http.MethodGet, "/agents", "agenthttp.(*Server).handleAgents", s.handleAgents)
+	if s.enableSwagger {
+		s.registerRoute(mux, http.MethodGet, "/openapi.yaml", "agenthttp.(*Server).handleOpenAPI", s.handleOpenAPI)
+		s.registerRoute(mux, http.MethodGet, "/swagger", "agenthttp.(*Server).handleSwagger", s.handleSwagger)
+		s.registerRoute(mux, http.MethodGet, "/swagger/", "agenthttp.(*Server).handleSwagger", s.handleSwagger)
+	}
 	s.registerRoute(mux, http.MethodPost, "/codex", "agenthttp.(*Server).handleRun", s.handleRun)
 	s.registerRoute(mux, http.MethodPost, "/codex/stream", "agenthttp.(*Server).handleRunStream", s.handleRunStream)
 	s.registerRoute(mux, http.MethodPost, "/runs", "agenthttp.(*Server).handleRun", s.handleRun)
@@ -154,8 +165,10 @@ func (s *Server) routes() *http.ServeMux {
 		s.logRegisteredRoute(http.MethodDelete, "/sessions/{sessionId}", "agenthttp.(*Server).handleSession")
 		s.logRegisteredRoute(http.MethodPost, "/sessions/{sessionId}/runs", "agenthttp.(*Server).handleSession")
 		s.logRegisteredRoute(http.MethodPost, "/sessions/{sessionId}/runs/stream", "agenthttp.(*Server).handleSession")
-		s.registerRoute(mux, http.MethodGet, "/examples/session-stream", "agenthttp.(*Server).handleSessionStreamExample", s.handleSessionStreamExample)
-		s.registerRoute(mux, http.MethodGet, "/examples/session-stream/", "agenthttp.(*Server).handleSessionStreamExample", s.handleSessionStreamExample)
+		if s.enableExamples {
+			s.registerRoute(mux, http.MethodGet, "/examples/session-stream", "agenthttp.(*Server).handleSessionStreamExample", s.handleSessionStreamExample)
+			s.registerRoute(mux, http.MethodGet, "/examples/session-stream/", "agenthttp.(*Server).handleSessionStreamExample", s.handleSessionStreamExample)
+		}
 	}
 	mux.HandleFunc("/", handleNotFound)
 	return mux

@@ -102,8 +102,90 @@ func TestUnknownRoutesReturn404(t *testing.T) {
 	assertJSON(t, response, map[string]any{"ok": false, "error": "not found"})
 }
 
-func TestGETSessionStreamExampleRequiresSessionStore(t *testing.T) {
+func TestGETOpenAPIRequiresSwaggerEnabled(t *testing.T) {
 	server := NewServer(ServerOptions{})
+
+	for _, path := range []string{"/openapi.yaml", "/swagger"} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		server.ServeHTTP(response, request)
+
+		assertStatus(t, response, http.StatusNotFound)
+		assertJSON(t, response, map[string]any{"ok": false, "error": "not found"})
+	}
+}
+
+func TestGETOpenAPIReturnsYAMLWhenSwaggerIsEnabled(t *testing.T) {
+	server := NewServer(ServerOptions{
+		EnableSwagger: true,
+	})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/openapi.yaml", nil)
+	server.ServeHTTP(response, request)
+
+	assertStatus(t, response, http.StatusOK)
+	if contentType := response.Header().Get("Content-Type"); contentType != "application/yaml; charset=utf-8" {
+		t.Fatalf("content-type = %q, want application/yaml", contentType)
+	}
+	if !strings.Contains(response.Body.String(), "openapi: 3.0.3") {
+		t.Fatalf("openapi document missing version:\n%s", response.Body.String())
+	}
+}
+
+func TestGETSwaggerReturnsHTMLWhenEnabled(t *testing.T) {
+	server := NewServer(ServerOptions{
+		EnableSwagger: true,
+	})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/swagger", nil)
+	server.ServeHTTP(response, request)
+
+	assertStatus(t, response, http.StatusOK)
+	if contentType := response.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
+		t.Fatalf("content-type = %q, want text/html", contentType)
+	}
+	body := response.Body.String()
+	for _, expected := range []string{"/openapi.yaml", "SwaggerUIBundle"} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("swagger HTML missing %q:\n%s", expected, body)
+		}
+	}
+}
+
+func TestGETSwaggerRedirectsTrailingSlash(t *testing.T) {
+	server := NewServer(ServerOptions{
+		EnableSwagger: true,
+	})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/swagger/", nil)
+	server.ServeHTTP(response, request)
+
+	assertStatus(t, response, http.StatusMovedPermanently)
+	if location := response.Header().Get("Location"); location != "/swagger" {
+		t.Fatalf("location = %q, want /swagger", location)
+	}
+}
+
+func TestOpenAPIDocumentRejectsUnsupportedMethods(t *testing.T) {
+	server := NewServer(ServerOptions{
+		EnableSwagger: true,
+	})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/openapi.yaml", nil)
+	server.ServeHTTP(response, request)
+
+	assertStatus(t, response, http.StatusMethodNotAllowed)
+	assertJSON(t, response, map[string]any{"ok": false, "error": "method not allowed"})
+}
+
+func TestGETSessionStreamExampleRequiresSessionStore(t *testing.T) {
+	server := NewServer(ServerOptions{
+		EnableExamples: true,
+	})
 
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/examples/session-stream", nil)
@@ -113,9 +195,23 @@ func TestGETSessionStreamExampleRequiresSessionStore(t *testing.T) {
 	assertJSON(t, response, map[string]any{"ok": false, "error": "not found"})
 }
 
-func TestGETSessionStreamExampleReturnsHTMLWhenSessionsAreEnabled(t *testing.T) {
+func TestGETSessionStreamExampleRequiresExamplesEnabled(t *testing.T) {
 	server := NewServer(ServerOptions{
 		SessionStore: newMemorySessionStore(),
+	})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/examples/session-stream", nil)
+	server.ServeHTTP(response, request)
+
+	assertStatus(t, response, http.StatusNotFound)
+	assertJSON(t, response, map[string]any{"ok": false, "error": "not found"})
+}
+
+func TestGETSessionStreamExampleReturnsHTMLWhenEnabled(t *testing.T) {
+	server := NewServer(ServerOptions{
+		SessionStore:   newMemorySessionStore(),
+		EnableExamples: true,
 	})
 
 	response := httptest.NewRecorder()
@@ -133,7 +229,8 @@ func TestGETSessionStreamExampleReturnsHTMLWhenSessionsAreEnabled(t *testing.T) 
 
 func TestGETSessionStreamExampleRedirectsTrailingSlash(t *testing.T) {
 	server := NewServer(ServerOptions{
-		SessionStore: newMemorySessionStore(),
+		SessionStore:   newMemorySessionStore(),
+		EnableExamples: true,
 	})
 
 	response := httptest.NewRecorder()

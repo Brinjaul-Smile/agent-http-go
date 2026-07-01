@@ -16,6 +16,12 @@ server:
   maxBodySize: 1MiB
   # 是否在启动时输出所有注册路由。
   logRoutes: false
+  # 是否暴露 /swagger 和 /openapi.yaml。
+  swagger:
+    enabled: false
+  # 是否暴露 /examples 调试页面。
+  examples:
+    enabled: false
 
 # Agent 子进程执行配置。
 runner:

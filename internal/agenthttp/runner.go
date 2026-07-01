@@ -108,12 +108,20 @@ func ResolveWorkspaceCwd(inputCwd, workspaceRoot string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
 
 	requested := root
 	if inputCwd != "" {
 		requested, err = filepath.Abs(inputCwd)
 		if err != nil {
 			return "", err
+		}
+		requested, err = filepath.EvalSymlinks(requested)
+		if err != nil {
+			return "", NewRequestError("cwd must be an existing path inside workspace", http.StatusBadRequest)
 		}
 	}
 

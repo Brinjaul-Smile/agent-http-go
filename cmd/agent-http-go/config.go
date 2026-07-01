@@ -44,6 +44,10 @@ type Config struct {
 	IdleTimeout       time.Duration
 	// LogRoutes 控制启动时是否把注册路由写入日志。
 	LogRoutes bool
+	// SwaggerEnabled 控制是否注册 /swagger 和 /openapi.yaml 文档路由。
+	SwaggerEnabled bool
+	// ExamplesEnabled 控制是否注册 /examples 调试页面路由。
+	ExamplesEnabled bool
 	// MaxBodyBytes 限制 JSON 请求体大小，避免过大的 prompt 或调试载荷占用内存。
 	MaxBodyBytes int64
 	// RunnerTimeout 控制单次 agent CLI 子进程允许运行的最长时间。
@@ -101,8 +105,16 @@ type serverConfig struct {
 	IdleTimeout       string `yaml:"idleTimeout"`
 	// logRoutes 为 true 时启动阶段会输出所有注册路由。
 	LogRoutes bool `yaml:"logRoutes"`
+	// swagger.enabled 控制是否暴露 Swagger/OpenAPI 文档。
+	Swagger featureToggleConfig `yaml:"swagger"`
+	// examples.enabled 控制是否暴露本地调试页面。
+	Examples featureToggleConfig `yaml:"examples"`
 	// maxBodySize 支持 B、KiB、MiB、GiB 或裸字节数。
 	MaxBodySize string `yaml:"maxBodySize"`
+}
+
+type featureToggleConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 // runnerConfig 对应 YAML 中的 runner 配置段。
@@ -234,6 +246,8 @@ func LoadConfig(options ConfigOptions) (Config, error) {
 		config.IdleTimeout = timeout
 	}
 	config.LogRoutes = fileConfig.Server.LogRoutes
+	config.SwaggerEnabled = fileConfig.Server.Swagger.Enabled
+	config.ExamplesEnabled = fileConfig.Server.Examples.Enabled
 	if fileConfig.Server.MaxBodySize != "" {
 		maxBodyBytes, err := parseByteSize(fileConfig.Server.MaxBodySize)
 		if err != nil {

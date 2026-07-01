@@ -46,6 +46,10 @@ server:
   shutdownTimeout: 10s
   maxBodySize: 1MiB
   logRoutes: false
+  swagger:
+    enabled: false
+  examples:
+    enabled: false
 
 runner:
   timeout: 10m
@@ -180,6 +184,18 @@ server:
 
 开启后会通过 `slog` 输出每个注册路由的 `method`、`path` 和 `handler`。
 
+### 文档和调试页面
+
+Swagger/OpenAPI 和 `examples` 调试页面默认不注册路由，需要时在 YAML 中显式打开：
+
+```yaml
+server:
+  swagger:
+    enabled: true
+  examples:
+    enabled: true
+```
+
 ### 持久化会话
 
 `session` 控制长对话持久化。默认开启，使用本地 SQLite 文件，不需要单独部署数据库服务。当前实现使用纯 Go SQLite 驱动 `modernc.org/sqlite`。
@@ -204,301 +220,41 @@ session:
 
 修改配置后需要重启服务生效。
 
-## 接口
+## 接口文档
 
-### `GET /health`
+完整 HTTP API 契约维护在 [docs/openapi.yaml](docs/openapi.yaml)，可直接导入 Swagger UI、Redoc 或 OpenAPI 客户端生成工具。
 
-健康检查接口。
-
-响应：
-
-```json
-{"ok":true}
-```
-
-### `GET /agents`
-
-检查当前支持的 agent CLI 是否存在于服务进程的 `PATH` 中，并返回是否可通过 `/runs` 调用。
-
-响应示例：
-
-```json
-{
-  "ok": true,
-  "agents": [
-    {
-      "name": "codex",
-      "command": "codex",
-      "available": true,
-      "supported": true
-    },
-    {
-      "name": "claude",
-      "command": "claude",
-      "available": false,
-      "supported": true,
-      "error": "claude CLI not found in PATH"
-    }
-  ]
-}
-```
-
-### `POST /runs`
-
-通用 agent 调用接口，通过 `agent` 字段选择后端；未传 `agent` 时默认使用 `claude`。
-
-请求示例：
-
-```sh
-curl -sS -X POST http://127.0.0.1:8787/runs \
-  -H 'Content-Type: application/json' \
-  -d '{"agent":"claude","prompt":"Reply with exactly: pong"}'
-```
-
-请求体：
-
-```json
-{
-  "agent": "claude",
-  "prompt": "Reply with exactly: pong",
-  "cwd": "./optional-subdir"
-}
-```
-
-字段说明：
-
-- `agent`：选填，当前支持 `codex` 和 `claude`；为空时默认使用 `claude`。
-- `prompt`：必填，非空字符串。
-- `cwd`：选填，必须解析到服务工作区内部。
-
-成功响应：
-
-```json
-{
-  "ok": true,
-  "exitCode": 0,
-  "output": "pong"
-}
-```
-
-### `POST /runs/stream`
-
-通用 agent 调用的 SSE 推送接口，通过 `agent` 字段选择后端；未传 `agent` 时默认使用 `claude`。
-
-请求示例：
-
-```sh
-curl -N -sS -X POST http://127.0.0.1:8787/runs/stream \
-  -H 'Content-Type: application/json' \
-  -d '{"agent":"claude","prompt":"Reply with exactly: pong"}'
-```
-
-响应类型：
-
-```http
-Content-Type: text/event-stream; charset=utf-8
-```
-
-事件示例：
+启用 `server.swagger.enabled` 并启动服务后，可以直接在浏览器访问：
 
 ```text
-event: start
-data: {"ok":true}
-
-event: delta
-data: {"delta":"pong"}
-
-event: done
-data: {"exitCode":0,"ok":true}
+http://127.0.0.1:8787/swagger
 ```
 
-如果执行阶段出错，会返回 `error` 事件：
+原始 OpenAPI YAML 地址：
 
 ```text
-event: error
-data: {"ok":false,"error":"..."}
-
-event: done
-data: {"ok":false}
+http://127.0.0.1:8787/openapi.yaml
 ```
 
-当前每个 agent 都有独立的流式适配：
+当前接口覆盖：
 
-- `codex`：使用 `codex app-server --stdio` 的 experimental JSON-RPC 协议，转发 `item/agentMessage/delta` 通知为 SSE `delta`。最终 `turn/completed` 只用于生成运行结果，不会被伪装成 `delta`。
-- `claude`：使用 `claude --print --output-format stream-json --verbose --include-partial-messages` 读取实时 JSONL，并将 partial message 转成 SSE `delta`。
+- `GET /health`
+- `GET /agents`
+- `POST /runs`
+- `POST /runs/stream`
+- `POST /sessions/{sessionId}/runs`
+- `POST /sessions/{sessionId}/runs/stream`
+- `GET /sessions/{sessionId}`
+- `DELETE /sessions/{sessionId}`
+- Deprecated 兼容接口：`POST /codex`、`POST /codex/stream`
 
-### `POST /codex`
-
-Deprecated 兼容接口，等价于 `POST /runs` 且 `agent` 固定为 `codex`。新调用方应使用 `POST /runs` 并显式传入需要的 `agent`；该接口响应会带上 `Deprecation: true` 和指向 `/runs` 的 `Link` 头。
-
-请求示例：
-
-```sh
-curl -sS -X POST http://127.0.0.1:8787/codex \
-  -H 'Content-Type: application/json' \
-  -d '{"prompt":"Reply with exactly: pong"}'
-```
-
-### `POST /codex/stream`
-
-Deprecated 兼容 SSE 接口，等价于 `POST /runs/stream` 且 `agent` 固定为 `codex`。新调用方应使用 `POST /runs/stream`；该接口响应会带上 `Deprecation: true` 和指向 `/runs/stream` 的 `Link` 头。
-
-请求示例：
-
-```sh
-curl -N -sS -X POST http://127.0.0.1:8787/codex/stream \
-  -H 'Content-Type: application/json' \
-  -d '{"prompt":"Reply with exactly: pong"}'
-```
-
-### `POST /sessions/{sessionId}/runs`
-
-持久化长对话接口。`sessionId` 由调用方生成并稳定复用；同一个 `sessionId` 会复用历史，不同 `sessionId` 相互隔离。
-
-请求示例：
-
-```sh
-curl -sS -X POST http://127.0.0.1:8787/sessions/chat-001/runs \
-  -H 'Content-Type: application/json' \
-  -d '{"agent":"claude","prompt":"我叫张三"}'
-
-curl -sS -X POST http://127.0.0.1:8787/sessions/chat-001/runs \
-  -H 'Content-Type: application/json' \
-  -d '{"agent":"claude","prompt":"我叫什么？"}'
-```
-
-请求体和 `/runs` 相同：
-
-```json
-{
-  "agent": "claude",
-  "prompt": "我叫什么？",
-  "cwd": "./optional-subdir"
-}
-```
-
-规则：
-
-- `sessionId` 允许字母、数字、`.`、`_`、`-`、`:`，最长 128 字节。
-- 第一次调用会创建 session，并绑定当次的 `agent` 和解析后的 `cwd`。
-- 后续同一 session 必须继续使用相同 `agent` 和 `cwd`，否则返回 `400`。
-- 同一个 session 内请求串行执行，不同 session 可并发执行。
-- 只有成功 turn 会参与后续上下文拼接；失败和超时会写入数据库用于审计，但不会污染后续上下文。
-
-成功响应：
-
-```json
-{
-  "ok": true,
-  "sessionId": "chat-001",
-  "exitCode": 0,
-  "output": "你叫张三。"
-}
-```
-
-### `POST /sessions/{sessionId}/runs/stream`
-
-持久化长对话的 SSE 推送接口。请求体、session 绑定规则、历史拼接规则和 `POST /sessions/{sessionId}/runs` 相同。
-
-请求示例：
-
-```sh
-curl -N -sS -X POST http://127.0.0.1:8787/sessions/chat-001/runs/stream \
-  -H 'Content-Type: application/json' \
-  -d '{"agent":"claude","prompt":"继续刚才的话题"}'
-```
-
-事件示例：
-
-```text
-event: start
-data: {"ok":true,"sessionId":"chat-001"}
-
-event: delta
-data: {"delta":"..."}
-
-event: done
-data: {"exitCode":0,"ok":true,"sessionId":"chat-001"}
-```
-
-启用 `session.enabled` 后，服务也会提供同源调试页面：
+同时启用 `server.examples.enabled` 和 `session.enabled` 后，服务也会提供同源调试页面：
 
 ```text
 http://127.0.0.1:8787/examples/session-stream
 ```
 
-该页面用于本地验证 `POST /sessions/{sessionId}/runs/stream` 的流式输出、`debug=1` 事件、停止请求、session 删除和 `GET /sessions/{sessionId}` 持久化历史。
-
-### `GET /sessions/{sessionId}`
-
-查询持久化会话和消息。
-
-```sh
-curl -sS http://127.0.0.1:8787/sessions/chat-001
-```
-
-响应示例：
-
-```json
-{
-  "ok": true,
-  "session": {
-    "id": "chat-001",
-    "agent": "claude",
-    "cwd": "/path/to/workspace",
-    "createdAt": "2026-06-29T12:00:00Z",
-    "updatedAt": "2026-06-29T12:01:00Z"
-  },
-  "messages": [
-    {
-      "id": 1,
-      "sessionId": "chat-001",
-      "role": "user",
-      "content": "我叫张三",
-      "status": "ok",
-      "createdAt": "2026-06-29T12:00:00Z"
-    }
-  ]
-}
-```
-
-### `DELETE /sessions/{sessionId}`
-
-删除持久化会话和关联消息。接口是幂等的，session 不存在也返回成功。
-
-```sh
-curl -sS -X DELETE http://127.0.0.1:8787/sessions/chat-001
-```
-
-响应：
-
-```json
-{"ok":true}
-```
-
-### 调试输出
-
-`/runs`、`/runs/stream`、`/codex`、`/codex/stream`、`/sessions/{sessionId}/runs` 和 `/sessions/{sessionId}/runs/stream` 都支持 `debug=1`。普通 JSON 接口开启后会额外返回原始 stdout 和 stderr；SSE 接口开启后会额外推送 `result` 事件，其中包含最终 `output`、原始 stdout 和 stderr。
-
-```sh
-curl -sS -X POST 'http://127.0.0.1:8787/codex?debug=1' \
-  -H 'Content-Type: application/json' \
-  -d '{"prompt":"Reply with exactly: pong"}'
-```
-
-响应示例：
-
-```json
-{
-  "ok": true,
-  "exitCode": 0,
-  "output": "pong",
-  "debug": {
-    "stdout": "...",
-    "stderr": "..."
-  }
-}
-```
+该页面用于本地验证持久化会话、SSE 流式输出、`debug=1` 事件、停止请求和 session 删除。
 
 ## 限制
 

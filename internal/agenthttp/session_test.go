@@ -46,11 +46,15 @@ func (s *memorySessionStore) CreateSession(_ context.Context, create SessionCrea
 	return session, nil
 }
 
-func (s *memorySessionStore) ListMessages(_ context.Context, sessionID string) ([]SessionMessage, error) {
+func (s *memorySessionStore) ListMessages(_ context.Context, sessionID string, limit int) ([]SessionMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return append([]SessionMessage(nil), s.messages[sessionID]...), nil
+	messages := s.messages[sessionID]
+	if limit > 0 && len(messages) > limit {
+		messages = messages[len(messages)-limit:]
+	}
+	return append([]SessionMessage(nil), messages...), nil
 }
 
 func (s *memorySessionStore) ListContextMessages(_ context.Context, sessionID string, maxMessages int) ([]SessionMessage, error) {

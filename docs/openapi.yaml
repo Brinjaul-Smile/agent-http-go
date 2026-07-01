@@ -1,0 +1,550 @@
+openapi: 3.0.3
+info:
+  title: Agent HTTP Go API
+  version: 0.1.0
+  description: |
+    Local HTTP wrapper for agent CLIs. The `/runs` endpoints default to `claude`
+    when `agent` is omitted. `/codex` endpoints are deprecated compatibility
+    aliases and should not be used by new clients.
+servers:
+  - url: http://127.0.0.1:8787
+    description: Local default server
+tags:
+  - name: health
+  - name: agents
+  - name: runs
+  - name: sessions
+  - name: codex
+    description: Deprecated compatibility endpoints.
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Service is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+              example:
+                ok: true
+
+  /agents:
+    get:
+      tags: [agents]
+      summary: List supported agent CLI availability
+      responses:
+        "200":
+          description: Known agents and whether their CLI command is available.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, agents]
+                properties:
+                  ok:
+                    type: boolean
+                  agents:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AgentStatus"
+              example:
+                ok: true
+                agents:
+                  - name: codex
+                    command: codex
+                    available: true
+                    supported: true
+                  - name: claude
+                    command: claude
+                    available: false
+                    supported: true
+                    error: claude CLI not found in PATH
+
+  /runs:
+    post:
+      tags: [runs]
+      summary: Run an agent request
+      description: Runs the selected agent once. If `agent` is omitted, `claude` is used.
+      parameters:
+        - $ref: "#/components/parameters/Debug"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunRequest"
+            example:
+              agent: claude
+              prompt: "Reply with exactly: pong"
+              cwd: ./optional-subdir
+      responses:
+        "200":
+          description: Runner completed. `ok` can still be false when the CLI exits with an error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunResponse"
+              example:
+                ok: true
+                exitCode: 0
+                output: pong
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+
+  /runs/stream:
+    post:
+      tags: [runs]
+      summary: Run an agent request as SSE
+      description: |
+        Streams real agent output deltas as Server-Sent Events. The final runner
+        output is not sent as a `delta`; it is only sent in a `result` event when
+        `debug=1` is used.
+      parameters:
+        - $ref: "#/components/parameters/Debug"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunRequest"
+            example:
+              agent: claude
+              prompt: "Reply with exactly: pong"
+      responses:
+        "200":
+          description: SSE stream containing `start`, `delta`, `error`, `result`, and `done` events.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              examples:
+                success:
+                  value: |
+                    event: start
+                    data: {"ok":true}
+
+                    event: delta
+                    data: {"delta":"pong"}
+
+                    event: done
+                    data: {"exitCode":0,"ok":true}
+                error:
+                  value: |
+                    event: error
+                    data: {"ok":false,"error":"..."}
+
+                    event: done
+                    data: {"ok":false}
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "413":
+          $ref: "#/components/responses/RequestTooLarge"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /codex:
+    post:
+      tags: [codex]
+      summary: Deprecated Codex run endpoint
+      deprecated: true
+      description: Deprecated compatibility alias for `/runs` with `agent` fixed to `codex`.
+      parameters:
+        - $ref: "#/components/parameters/Debug"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CodexRequest"
+            example:
+              prompt: "Reply with exactly: pong"
+      responses:
+        "200":
+          description: Runner completed. Response includes deprecation headers.
+          headers:
+            Deprecation:
+              $ref: "#/components/headers/Deprecation"
+            Link:
+              $ref: "#/components/headers/RunsSuccessorLink"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+
+  /codex/stream:
+    post:
+      tags: [codex]
+      summary: Deprecated Codex SSE endpoint
+      deprecated: true
+      description: Deprecated compatibility alias for `/runs/stream` with `agent` fixed to `codex`.
+      parameters:
+        - $ref: "#/components/parameters/Debug"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CodexRequest"
+      responses:
+        "200":
+          description: SSE stream. Response includes deprecation headers.
+          headers:
+            Deprecation:
+              $ref: "#/components/headers/Deprecation"
+            Link:
+              $ref: "#/components/headers/RunsStreamSuccessorLink"
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /sessions/{sessionId}:
+    get:
+      tags: [sessions]
+      summary: Get a persisted session and messages
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - name: limit
+          in: query
+          required: false
+          description: Message limit. Omit for the latest 100 messages. Use `all` for the full history.
+          schema:
+            oneOf:
+              - type: integer
+                minimum: 1
+              - type: string
+                enum: [all]
+      responses:
+        "200":
+          description: Session metadata and persisted messages.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [sessions]
+      summary: Delete a persisted session
+      description: |
+        Idempotent. Deleting a missing session still returns `ok: true`.
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Deleted or already missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+              example:
+                ok: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /sessions/{sessionId}/runs:
+    post:
+      tags: [sessions]
+      summary: Run an agent request in a persisted session
+      description: |
+        Creates the session on first use and binds it to the resolved `agent` and
+        real `cwd`. Later requests with the same `sessionId` must use the same
+        values. Successful turns are injected into later prompts; failed and
+        timed-out turns are persisted for audit but not used as context.
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/Debug"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunRequest"
+      responses:
+        "200":
+          description: Runner completed and the turn was persisted.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/RunResponse"
+                  - type: object
+                    required: [sessionId]
+                    properties:
+                      sessionId:
+                        type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+
+  /sessions/{sessionId}/runs/stream:
+    post:
+      tags: [sessions]
+      summary: Run an agent request in a persisted session as SSE
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/Debug"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunRequest"
+      responses:
+        "200":
+          description: SSE stream. `start`, `error`, and `done` events include `sessionId`.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              example: |
+                event: start
+                data: {"ok":true,"sessionId":"chat-001"}
+
+                event: delta
+                data: {"delta":"..."}
+
+                event: done
+                data: {"exitCode":0,"ok":true,"sessionId":"chat-001"}
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+components:
+  parameters:
+    Debug:
+      name: debug
+      in: query
+      required: false
+      description: Set to `1` to include raw stdout/stderr in JSON responses or a final SSE `result` event.
+      schema:
+        type: string
+        enum: ["1"]
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      description: Letters, numbers, `.`, `_`, `-`, or `:`, up to 128 bytes.
+      schema:
+        type: string
+        maxLength: 128
+        pattern: "^[A-Za-z0-9._:-]+$"
+
+  headers:
+    Deprecation:
+      description: Indicates the endpoint is deprecated.
+      schema:
+        type: string
+        example: "true"
+    RunsSuccessorLink:
+      description: Successor endpoint link.
+      schema:
+        type: string
+        example: '</runs>; rel="successor-version"'
+    RunsStreamSuccessorLink:
+      description: Successor endpoint link.
+      schema:
+        type: string
+        example: '</runs/stream>; rel="successor-version"'
+
+  responses:
+    BadRequest:
+      description: Invalid request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            ok: false
+            error: session not found
+    RequestTooLarge:
+      description: Request body exceeds `server.maxBodySize`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            ok: false
+            error: request body too large
+    ServiceUnavailable:
+      description: Agent CLI is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    GatewayTimeout:
+      description: Agent execution timed out.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/RunResponse"
+
+  schemas:
+    OkResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+
+    ErrorResponse:
+      type: object
+      required: [ok, error]
+      properties:
+        ok:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+
+    AgentStatus:
+      type: object
+      required: [name, command, available, supported]
+      properties:
+        name:
+          type: string
+          enum: [codex, claude]
+        command:
+          type: string
+        available:
+          type: boolean
+        supported:
+          type: boolean
+        error:
+          type: string
+
+    RunRequest:
+      type: object
+      required: [prompt]
+      properties:
+        agent:
+          type: string
+          enum: [codex, claude]
+          default: claude
+        prompt:
+          type: string
+          minLength: 1
+        cwd:
+          type: string
+          description: Existing path inside the configured workspace after resolving symlinks.
+
+    CodexRequest:
+      type: object
+      required: [prompt]
+      properties:
+        prompt:
+          type: string
+          minLength: 1
+        cwd:
+          type: string
+
+    RunResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+        sessionId:
+          type: string
+        output:
+          type: string
+        error:
+          type: string
+        exitCode:
+          type: integer
+        timedOut:
+          type: boolean
+        debug:
+          $ref: "#/components/schemas/DebugOutput"
+
+    DebugOutput:
+      type: object
+      properties:
+        stdout:
+          type: string
+        stderr:
+          type: string
+
+    Session:
+      type: object
+      required: [id, agent, cwd, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        agent:
+          type: string
+          enum: [codex, claude]
+        cwd:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    SessionMessage:
+      type: object
+      required: [id, sessionId, role, content, status, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        sessionId:
+          type: string
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+        status:
+          type: string
+          enum: [ok, failed, timed_out]
+        createdAt:
+          type: string
+          format: date-time
+
+    SessionResponse:
+      type: object
+      required: [ok, session, messages]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+        session:
+          $ref: "#/components/schemas/Session"
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionMessage"

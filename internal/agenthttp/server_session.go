@@ -3,6 +3,7 @@ package agenthttp
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -219,7 +220,12 @@ func (s *Server) handleGetSession(response http.ResponseWriter, request *http.Re
 		return
 	}
 
-	messages, err := s.sessionStore.ListMessages(request.Context(), sessionID)
+	limit, err := parseSessionListLimit(request)
+	if err != nil {
+		s.sendError(response, err)
+		return
+	}
+	messages, err := s.sessionStore.ListMessages(request.Context(), sessionID, limit)
 	if err != nil {
 		s.sendError(response, err)
 		return
@@ -229,6 +235,23 @@ func (s *Server) handleGetSession(response http.ResponseWriter, request *http.Re
 		"session":  session,
 		"messages": messages,
 	})
+}
+
+// parseSessionListLimit 解析 GET /sessions/{sessionId}?limit=...。
+// 空值默认返回最近 100 条消息；limit=all 返回完整历史。
+func parseSessionListLimit(request *http.Request) (int, error) {
+	value := strings.TrimSpace(request.URL.Query().Get("limit"))
+	if value == "" {
+		return defaultSessionListLimit, nil
+	}
+	if strings.EqualFold(value, "all") {
+		return 0, nil
+	}
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit <= 0 {
+		return 0, NewRequestError("limit must be a positive integer or all", http.StatusBadRequest)
+	}
+	return limit, nil
 }
 
 // handleDeleteSession 删除 session 及其消息。
