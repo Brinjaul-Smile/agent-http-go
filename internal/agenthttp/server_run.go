@@ -6,6 +6,9 @@ import (
 
 // handleRun 同时处理 POST /runs 和兼容接口 POST /codex。
 func (s *Server) handleRun(response http.ResponseWriter, request *http.Request) {
+	if request.URL.Path == "/codex" {
+		markDeprecatedEndpoint(response, "/runs")
+	}
 	if request.Method != http.MethodPost {
 		sendJSON(response, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "method not allowed"})
 		return

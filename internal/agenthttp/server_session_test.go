@@ -201,6 +201,41 @@ func TestPOSTSessionRunRejectsAgentMismatch(t *testing.T) {
 	})
 }
 
+func TestPOSTSessionRunDefaultsToClaudeAgent(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	store := newMemorySessionStore()
+	server := NewServer(ServerOptions{
+		WorkspaceRoot: workspaceRoot,
+		SessionStore:  store,
+		Runners: map[string]Runner{
+			"codex": func(context.Context, RunRequest) (RunResult, error) {
+				return RunResult{}, errors.New("codex runner should not be called")
+			},
+			"claude": func(_ context.Context, request RunRequest) (RunResult, error) {
+				return RunResult{OK: true, Output: "claude:" + request.Prompt}, nil
+			},
+		},
+	})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/sessions/chat-1/runs", jsonBody(t, map[string]any{
+		"prompt": "hello",
+	}))
+	server.ServeHTTP(response, request)
+
+	assertStatus(t, response, http.StatusOK)
+	session, ok, err := store.GetSession(context.Background(), "chat-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("session was not created")
+	}
+	if session.Agent != DefaultAgent {
+		t.Fatalf("session agent = %q, want %q", session.Agent, DefaultAgent)
+	}
+}
+
 func TestPOSTSessionRunStoresFailedTurnButSkipsItFromContext(t *testing.T) {
 	workspaceRoot := t.TempDir()
 	store := newMemorySessionStore()

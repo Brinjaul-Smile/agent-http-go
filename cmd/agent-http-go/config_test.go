@@ -26,6 +26,15 @@ func TestLoadConfigUsesDefaultsWhenConfigFileIsMissing(t *testing.T) {
 	if config.ShutdownTimeout != 10*time.Second {
 		t.Fatalf("shutdownTimeout = %s, want 10s", config.ShutdownTimeout)
 	}
+	if config.ReadHeaderTimeout != 5*time.Second {
+		t.Fatalf("readHeaderTimeout = %s, want 5s", config.ReadHeaderTimeout)
+	}
+	if config.ReadTimeout != 30*time.Second {
+		t.Fatalf("readTimeout = %s, want 30s", config.ReadTimeout)
+	}
+	if config.IdleTimeout != 120*time.Second {
+		t.Fatalf("idleTimeout = %s, want 120s", config.IdleTimeout)
+	}
 	if config.LogRoutes {
 		t.Fatal("logRoutes = true, want false")
 	}
@@ -78,7 +87,7 @@ func TestLoadConfigUsesDefaultsWhenConfigFileIsMissing(t *testing.T) {
 
 func TestLoadConfigReadsServerSettingsFromYAML(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(configPath, []byte("server:\n  host: 0.0.0.0\n  port: \"8080\"\n  shutdownTimeout: 3s\n  logRoutes: true\n  maxBodySize: 2MiB\nrunner:\n  timeout: 2m30s\n  codex:\n    command: /opt/bin/codex\n    approvalPolicy: on-request\n    sandbox: read-only\n    ephemeral: false\n  claude:\n    command: /opt/bin/claude\nworkspace:\n  root: ./workspace\nlog:\n  level: debug\n  format: json\nsession:\n  enabled: false\n  driver: sqlite\n  maxTurns: 12\n  maxHistorySize: 32KiB\n  sqlite:\n    path: ./sessions.db\n"), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte("server:\n  host: 0.0.0.0\n  port: \"8080\"\n  shutdownTimeout: 3s\n  readHeaderTimeout: 4s\n  readTimeout: 45s\n  idleTimeout: 90s\n  logRoutes: true\n  maxBodySize: 2MiB\nrunner:\n  timeout: 2m30s\n  codex:\n    command: /opt/bin/codex\n    approvalPolicy: on-request\n    sandbox: read-only\n    ephemeral: false\n  claude:\n    command: /opt/bin/claude\nworkspace:\n  root: ./workspace\nlog:\n  level: debug\n  format: json\nsession:\n  enabled: false\n  driver: sqlite\n  maxTurns: 12\n  maxHistorySize: 32KiB\n  sqlite:\n    path: ./sessions.db\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -98,6 +107,15 @@ func TestLoadConfigReadsServerSettingsFromYAML(t *testing.T) {
 	}
 	if config.ShutdownTimeout != 3*time.Second {
 		t.Fatalf("shutdownTimeout = %s, want 3s", config.ShutdownTimeout)
+	}
+	if config.ReadHeaderTimeout != 4*time.Second {
+		t.Fatalf("readHeaderTimeout = %s, want 4s", config.ReadHeaderTimeout)
+	}
+	if config.ReadTimeout != 45*time.Second {
+		t.Fatalf("readTimeout = %s, want 45s", config.ReadTimeout)
+	}
+	if config.IdleTimeout != 90*time.Second {
+		t.Fatalf("idleTimeout = %s, want 90s", config.IdleTimeout)
 	}
 	if !config.LogRoutes {
 		t.Fatal("logRoutes = false, want true")
@@ -167,6 +185,21 @@ func TestLoadConfigRejectsInvalidRunnerTimeout(t *testing.T) {
 func TestLoadConfigRejectsInvalidShutdownTimeout(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("server:\n  shutdownTimeout: slow\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadConfig(ConfigOptions{
+		Path: configPath,
+		Env:  map[string]string{},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestLoadConfigRejectsInvalidHTTPTimeout(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("server:\n  readHeaderTimeout: slow\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

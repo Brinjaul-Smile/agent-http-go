@@ -61,6 +61,7 @@ func (s *SQLiteSessionStore) Close() error {
 func (s *SQLiteSessionStore) init(ctx context.Context) error {
 	statements := []string{
 		`PRAGMA foreign_keys = ON`,
+		`PRAGMA busy_timeout = 5000`,
 		`CREATE TABLE IF NOT EXISTS sessions (
 			id TEXT PRIMARY KEY,
 			agent TEXT NOT NULL,
@@ -85,6 +86,9 @@ func (s *SQLiteSessionStore) init(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return err
 		}
+	}
+	if _, err := s.db.ExecContext(ctx, `PRAGMA journal_mode = WAL`); err != nil {
+		return err
 	}
 	return nil
 }

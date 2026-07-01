@@ -125,6 +125,12 @@ runner:
 
 `server.shutdownTimeout` 控制收到中断信号后的优雅关闭等待时间，默认是 `10s`。
 
+### HTTP 连接超时
+
+`server.readHeaderTimeout` 控制读取请求头的最长时间，默认是 `5s`。`server.readTimeout` 控制读取完整请求体的最长时间，默认是 `30s`。`server.idleTimeout` 控制 keep-alive 空闲连接保留时间，默认是 `120s`。
+
+服务不会默认设置 `WriteTimeout`，避免长时间 SSE 响应被固定写超时切断。
+
 ### 请求体大小
 
 `server.maxBodySize` 控制 JSON 请求体最大大小，默认是 `1MiB`。
@@ -194,7 +200,7 @@ session:
 - `driver`：当前支持 `sqlite`；代码通过 `SessionStore` 抽象保留后续 RDS 扩展空间。
 - `maxTurns`：拼接历史上下文时最多取最近多少轮成功对话。
 - `maxHistorySize`：拼接历史上下文的最大大小，支持 `B`、`KiB`、`MiB`、`GiB`。
-- `sqlite.path`：SQLite 数据库文件路径。首次启动会自动创建目录、数据库文件和表。
+- `sqlite.path`：SQLite 数据库文件路径。首次启动会自动创建目录、数据库文件和表。SQLite 连接默认启用 `foreign_keys`、`busy_timeout=5000` 和 WAL journal mode。
 
 修改配置后需要重启服务生效。
 
@@ -239,21 +245,21 @@ session:
 
 ### `POST /runs`
 
-通用 agent 调用接口，通过 `agent` 字段选择后端。
+通用 agent 调用接口，通过 `agent` 字段选择后端；未传 `agent` 时默认使用 `claude`。
 
 请求示例：
 
 ```sh
 curl -sS -X POST http://127.0.0.1:8787/runs \
   -H 'Content-Type: application/json' \
-  -d '{"agent":"codex","prompt":"Reply with exactly: pong"}'
+  -d '{"agent":"claude","prompt":"Reply with exactly: pong"}'
 ```
 
 请求体：
 
 ```json
 {
-  "agent": "codex",
+  "agent": "claude",
   "prompt": "Reply with exactly: pong",
   "cwd": "./optional-subdir"
 }
@@ -261,7 +267,7 @@ curl -sS -X POST http://127.0.0.1:8787/runs \
 
 字段说明：
 
-- `agent`：必填，当前支持 `codex` 和 `claude`。
+- `agent`：选填，当前支持 `codex` 和 `claude`；为空时默认使用 `claude`。
 - `prompt`：必填，非空字符串。
 - `cwd`：选填，必须解析到服务工作区内部。
 
@@ -277,14 +283,14 @@ curl -sS -X POST http://127.0.0.1:8787/runs \
 
 ### `POST /runs/stream`
 
-通用 agent 调用的 SSE 推送接口，通过 `agent` 字段选择后端。
+通用 agent 调用的 SSE 推送接口，通过 `agent` 字段选择后端；未传 `agent` 时默认使用 `claude`。
 
 请求示例：
 
 ```sh
 curl -N -sS -X POST http://127.0.0.1:8787/runs/stream \
   -H 'Content-Type: application/json' \
-  -d '{"agent":"codex","prompt":"Reply with exactly: pong"}'
+  -d '{"agent":"claude","prompt":"Reply with exactly: pong"}'
 ```
 
 响应类型：
@@ -323,7 +329,7 @@ data: {"ok":false}
 
 ### `POST /codex`
 
-兼容接口，等价于 `POST /runs` 且 `agent` 固定为 `codex`。
+Deprecated 兼容接口，等价于 `POST /runs` 且 `agent` 固定为 `codex`。新调用方应使用 `POST /runs` 并显式传入需要的 `agent`；该接口响应会带上 `Deprecation: true` 和指向 `/runs` 的 `Link` 头。
 
 请求示例：
 
@@ -335,7 +341,7 @@ curl -sS -X POST http://127.0.0.1:8787/codex \
 
 ### `POST /codex/stream`
 
-兼容 SSE 接口，等价于 `POST /runs/stream` 且 `agent` 固定为 `codex`。
+Deprecated 兼容 SSE 接口，等价于 `POST /runs/stream` 且 `agent` 固定为 `codex`。新调用方应使用 `POST /runs/stream`；该接口响应会带上 `Deprecation: true` 和指向 `/runs/stream` 的 `Link` 头。
 
 请求示例：
 
@@ -354,18 +360,18 @@ curl -N -sS -X POST http://127.0.0.1:8787/codex/stream \
 ```sh
 curl -sS -X POST http://127.0.0.1:8787/sessions/chat-001/runs \
   -H 'Content-Type: application/json' \
-  -d '{"agent":"codex","prompt":"我叫张三"}'
+  -d '{"agent":"claude","prompt":"我叫张三"}'
 
 curl -sS -X POST http://127.0.0.1:8787/sessions/chat-001/runs \
   -H 'Content-Type: application/json' \
-  -d '{"agent":"codex","prompt":"我叫什么？"}'
+  -d '{"agent":"claude","prompt":"我叫什么？"}'
 ```
 
 请求体和 `/runs` 相同：
 
 ```json
 {
-  "agent": "codex",
+  "agent": "claude",
   "prompt": "我叫什么？",
   "cwd": "./optional-subdir"
 }
@@ -399,7 +405,7 @@ curl -sS -X POST http://127.0.0.1:8787/sessions/chat-001/runs \
 ```sh
 curl -N -sS -X POST http://127.0.0.1:8787/sessions/chat-001/runs/stream \
   -H 'Content-Type: application/json' \
-  -d '{"agent":"codex","prompt":"继续刚才的话题"}'
+  -d '{"agent":"claude","prompt":"继续刚才的话题"}'
 ```
 
 事件示例：
@@ -438,7 +444,7 @@ curl -sS http://127.0.0.1:8787/sessions/chat-001
   "ok": true,
   "session": {
     "id": "chat-001",
-    "agent": "codex",
+    "agent": "claude",
     "cwd": "/path/to/workspace",
     "createdAt": "2026-06-29T12:00:00Z",
     "updatedAt": "2026-06-29T12:01:00Z"

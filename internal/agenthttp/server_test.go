@@ -187,6 +187,18 @@ func assertJSON(t *testing.T, response *httptest.ResponseRecorder, want map[stri
 	}
 }
 
+func assertDeprecatedEndpoint(t *testing.T, response *httptest.ResponseRecorder, successor string) {
+	t.Helper()
+
+	if deprecated := response.Header().Get("Deprecation"); deprecated != "true" {
+		t.Fatalf("Deprecation header = %q, want true", deprecated)
+	}
+	wantLink := "<" + successor + ">; rel=\"successor-version\""
+	if link := response.Header().Get("Link"); link != wantLink {
+		t.Fatalf("Link header = %q, want %q", link, wantLink)
+	}
+}
+
 func jsonEqual(a, b any) bool {
 	encodedA, _ := json.Marshal(a)
 	encodedB, _ := json.Marshal(b)

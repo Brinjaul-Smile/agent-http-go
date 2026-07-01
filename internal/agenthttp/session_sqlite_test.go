@@ -80,3 +80,27 @@ func TestSQLiteSessionStorePersistsAndDeletesSession(t *testing.T) {
 		t.Fatalf("messages len after delete = %d, want 0", len(messages))
 	}
 }
+
+func TestSQLiteSessionStoreConfiguresConnectionPragmas(t *testing.T) {
+	store, err := OpenSQLiteSessionStore(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	var busyTimeout int
+	if err := store.db.QueryRowContext(context.Background(), `PRAGMA busy_timeout`).Scan(&busyTimeout); err != nil {
+		t.Fatal(err)
+	}
+	if busyTimeout != 5000 {
+		t.Fatalf("busy_timeout = %d, want 5000", busyTimeout)
+	}
+
+	var journalMode string
+	if err := store.db.QueryRowContext(context.Background(), `PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+		t.Fatal(err)
+	}
+	if journalMode != "wal" {
+		t.Fatalf("journal_mode = %q, want wal", journalMode)
+	}
+}

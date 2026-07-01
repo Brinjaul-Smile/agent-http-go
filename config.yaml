@@ -6,6 +6,12 @@ server:
   port: "8787"
   # 收到中断信号后等待 HTTP 服务优雅关闭的最长时间，使用 Go duration 格式。
   shutdownTimeout: 10s
+  # 读取请求头的最长时间，防止慢连接长期占用。
+  readHeaderTimeout: 5s
+  # 读取完整请求体的最长时间；SSE 响应不设置写超时。
+  readTimeout: 30s
+  # keep-alive 空闲连接保留时间。
+  idleTimeout: 120s
   # JSON 请求体最大大小，支持 B、KiB、MiB、GiB 或裸字节数。
   maxBodySize: 1MiB
   # 是否在启动时输出所有注册路由。

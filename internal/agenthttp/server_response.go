@@ -67,11 +67,11 @@ func formatRunResult(result RunResult, includeDebug bool) map[string]any {
 }
 
 // sendStreamResultIfDebug 仅在 debug 模式下发送包含原始 stdout/stderr 的 result 事件。
-func sendStreamResultIfDebug(stream *sseStream, result RunResult, includeDebug bool) {
+func sendStreamResultIfDebug(stream *sseStream, result RunResult, includeDebug bool) error {
 	if !includeDebug {
-		return
+		return nil
 	}
-	stream.send("result", formatRunResult(result, true))
+	return stream.send("result", formatRunResult(result, true))
 }
 
 // formatStreamDone 构建 SSE done 事件的载荷，不含 debug 信息以减少事件体积。
@@ -106,6 +106,13 @@ func sendJSON(response http.ResponseWriter, statusCode int, body any) {
 	_, _ = response.Write(payload)
 }
 
+// markDeprecatedEndpoint 为仍保留的兼容接口加迁移提示响应头。
+func markDeprecatedEndpoint(response http.ResponseWriter, successor string) {
+	header := response.Header()
+	header.Set("Deprecation", "true")
+	header.Set("Link", "<"+successor+">; rel=\"successor-version\"")
+}
+
 // sseStream 封装 Server-Sent Events 响应流，把 runner 输出转成 SSE 事件。
 type sseStream struct {
 	// response 是 HTTP 响应写入器。
@@ -134,24 +141,30 @@ func newSSEStream(response http.ResponseWriter) (*sseStream, bool) {
 }
 
 // send 写出一个 SSE 事件。data 使用 JSON，方便客户端按事件类型解析结构化载荷。
-func (s *sseStream) send(event string, data any) {
+func (s *sseStream) send(event string, data any) error {
 	payload, err := json.Marshal(data)
 	if err != nil {
 		payload = []byte(`{"ok":false,"error":"internal server error"}`)
 	}
 
-	_, _ = s.response.Write([]byte("event: " + event + "\n"))
-	for _, line := range strings.Split(string(payload), "\n") {
-		_, _ = s.response.Write([]byte("data: " + line + "\n"))
+	if _, err := s.response.Write([]byte("event: " + event + "\n")); err != nil {
+		return err
 	}
-	_, _ = s.response.Write([]byte("\n"))
+	for _, line := range strings.Split(string(payload), "\n") {
+		if _, err := s.response.Write([]byte("data: " + line + "\n")); err != nil {
+			return err
+		}
+	}
+	if _, err := s.response.Write([]byte("\n")); err != nil {
+		return err
+	}
 	s.flusher.Flush()
+	return nil
 }
 
 // WriteDelta 实现 StreamWriter，把 runner stdout 片段转成 SSE delta 事件。
 func (s *sseStream) WriteDelta(delta string) error {
-	s.send("delta", map[string]any{"delta": delta})
-	return nil
+	return s.send("delta", map[string]any{"delta": delta})
 }
 
 // errorMessage 返回非空错误文案，避免给调用方返回空字符串。

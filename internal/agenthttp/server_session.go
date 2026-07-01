@@ -85,12 +85,14 @@ func (s *Server) handleSessionRun(response http.ResponseWriter, request *http.Re
 
 	result, err := runner(request.Context(), prep.body)
 	if err != nil {
-		s.sessionStore.AppendTurn(request.Context(), SessionTurn{
+		if appendErr := s.sessionStore.AppendTurn(request.Context(), SessionTurn{
 			SessionID:        sessionID,
 			UserContent:      prep.originalPrompt,
 			AssistantContent: errorMessage(err),
 			Status:           SessionStatusFailed,
-		})
+		}); appendErr != nil {
+			s.logger.Error("failed to append failed session turn", "sessionId", sessionID, "error", appendErr)
+		}
 		s.sendError(response, err)
 		return
 	}
@@ -140,18 +142,24 @@ func (s *Server) handleSessionRunStream(response http.ResponseWriter, request *h
 		s.sendError(response, NewRequestError("streaming is not supported", http.StatusInternalServerError))
 		return
 	}
-	stream.send("start", map[string]any{"ok": true, "sessionId": sessionID})
+	if err := stream.send("start", map[string]any{"ok": true, "sessionId": sessionID}); err != nil {
+		return
+	}
 
 	result, err := runner(request.Context(), prep.body, stream)
 	if err != nil {
-		s.sessionStore.AppendTurn(request.Context(), SessionTurn{
+		if appendErr := s.sessionStore.AppendTurn(request.Context(), SessionTurn{
 			SessionID:        sessionID,
 			UserContent:      prep.originalPrompt,
 			AssistantContent: errorMessage(err),
 			Status:           SessionStatusFailed,
-		})
-		stream.send("error", map[string]any{"ok": false, "sessionId": sessionID, "error": errorMessage(err)})
-		stream.send("done", map[string]any{"ok": false, "sessionId": sessionID})
+		}); appendErr != nil {
+			s.logger.Error("failed to append failed session turn", "sessionId", sessionID, "error", appendErr)
+		}
+		if err := stream.send("error", map[string]any{"ok": false, "sessionId": sessionID, "error": errorMessage(err)}); err != nil {
+			return
+		}
+		_ = stream.send("done", map[string]any{"ok": false, "sessionId": sessionID})
 		return
 	}
 
@@ -162,13 +170,17 @@ func (s *Server) handleSessionRunStream(response http.ResponseWriter, request *h
 		AssistantContent: sessionAssistantContent(result),
 		Status:           sessionStatusFromResult(result),
 	}); err != nil {
-		stream.send("error", map[string]any{"ok": false, "sessionId": sessionID, "error": errorMessage(err)})
-		stream.send("done", map[string]any{"ok": false, "sessionId": sessionID})
+		if err := stream.send("error", map[string]any{"ok": false, "sessionId": sessionID, "error": errorMessage(err)}); err != nil {
+			return
+		}
+		_ = stream.send("done", map[string]any{"ok": false, "sessionId": sessionID})
 		return
 	}
 
-	sendStreamResultIfDebug(stream, result, request.URL.Query().Get("debug") == "1")
-	stream.send("done", formatStreamDone(result))
+	if err := sendStreamResultIfDebug(stream, result, request.URL.Query().Get("debug") == "1"); err != nil {
+		return
+	}
+	_ = stream.send("done", formatStreamDone(result))
 }
 
 // ensureSessionMatches 创建新 session，或校验已存在 session 的 agent/cwd 绑定。
@@ -255,6 +267,7 @@ func (s *Server) prepareSessionRun(request *http.Request, body RunRequest, sessi
 	if err != nil {
 		return nil, err
 	}
+	body.Agent = requestAgent(body)
 
 	cwd, err := ResolveWorkspaceCwd(body.Cwd, s.workspaceRoot)
 	if err != nil {

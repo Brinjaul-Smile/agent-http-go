@@ -30,6 +30,7 @@ func TestPOSTCodexReturnsRunnerResult(t *testing.T) {
 	server.ServeHTTP(response, request)
 
 	assertStatus(t, response, http.StatusOK)
+	assertDeprecatedEndpoint(t, response, "/runs")
 	assertJSON(t, response, map[string]any{
 		"ok":       true,
 		"exitCode": float64(0),
@@ -58,6 +59,35 @@ func TestPOSTRunsDispatchesToRequestedRunner(t *testing.T) {
 
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/runs", jsonBody(t, map[string]any{"agent": "claude", "prompt": "hello"}))
+	server.ServeHTTP(response, request)
+
+	assertStatus(t, response, http.StatusOK)
+	assertJSON(t, response, map[string]any{
+		"ok":       true,
+		"exitCode": float64(0),
+		"output":   "claude:hello",
+	})
+}
+
+func TestPOSTRunsDefaultsToClaudeRunner(t *testing.T) {
+	server := NewServer(ServerOptions{
+		Runners: map[string]Runner{
+			"codex": func(context.Context, RunRequest) (RunResult, error) {
+				return RunResult{}, errors.New("codex runner should not be called")
+			},
+			"claude": func(_ context.Context, request RunRequest) (RunResult, error) {
+				exitCode := 0
+				return RunResult{
+					OK:       true,
+					ExitCode: &exitCode,
+					Output:   "claude:" + request.Prompt,
+				}, nil
+			},
+		},
+	})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/runs", jsonBody(t, map[string]any{"prompt": "hello"}))
 	server.ServeHTTP(response, request)
 
 	assertStatus(t, response, http.StatusOK)

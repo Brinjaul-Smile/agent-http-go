@@ -1,6 +1,7 @@
 package agenthttp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -111,6 +112,39 @@ func TestPOSTRunStreamDebugIncludesResult(t *testing.T) {
 	}
 }
 
+func TestPOSTRunsStreamDefaultsToClaudeRunner(t *testing.T) {
+	server := NewServer(ServerOptions{
+		Runners: map[string]Runner{
+			"codex": func(context.Context, RunRequest) (RunResult, error) {
+				return RunResult{}, errors.New("sync runner should not be called")
+			},
+		},
+		StreamRunners: map[string]StreamRunner{
+			"codex": func(context.Context, RunRequest, StreamWriter) (RunResult, error) {
+				return RunResult{}, errors.New("codex stream runner should not be called")
+			},
+			"claude": func(_ context.Context, request RunRequest, writer StreamWriter) (RunResult, error) {
+				if err := writer.WriteDelta("claude:" + request.Prompt); err != nil {
+					return RunResult{}, err
+				}
+				exitCode := 0
+				return RunResult{OK: true, ExitCode: &exitCode}, nil
+			},
+		},
+	})
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/runs/stream", jsonBody(t, map[string]any{
+		"prompt": "hello",
+	}))
+	server.ServeHTTP(response, request)
+
+	assertStatus(t, response, http.StatusOK)
+	if body := response.Body.String(); !strings.Contains(body, `"delta":"claude:hello"`) {
+		t.Fatalf("SSE body missing claude delta:\n%s", body)
+	}
+}
+
 func TestPOSTCodexStreamUsesCodexRunner(t *testing.T) {
 	server := NewServer(ServerOptions{
 		Runners: map[string]Runner{
@@ -139,6 +173,7 @@ func TestPOSTCodexStreamUsesCodexRunner(t *testing.T) {
 	server.ServeHTTP(response, request)
 
 	assertStatus(t, response, http.StatusOK)
+	assertDeprecatedEndpoint(t, response, "/runs/stream")
 	body := response.Body.String()
 	for _, expected := range []string{
 		"event: start\n",
@@ -155,3 +190,69 @@ func TestPOSTCodexStreamUsesCodexRunner(t *testing.T) {
 		t.Fatalf("SSE body unexpectedly contains result event:\n%s", body)
 	}
 }
+
+func TestPOSTRunsStreamPropagatesSSEWriteError(t *testing.T) {
+	writeErr := errors.New("client disconnected")
+	var runnerWriteErr error
+	server := NewServer(ServerOptions{
+		Runners: map[string]Runner{
+			"codex": func(context.Context, RunRequest) (RunResult, error) {
+				return RunResult{}, errors.New("sync runner should not be called")
+			},
+		},
+		StreamRunners: map[string]StreamRunner{
+			"codex": func(_ context.Context, _ RunRequest, writer StreamWriter) (RunResult, error) {
+				runnerWriteErr = writer.WriteDelta("chunk after disconnect")
+				return RunResult{}, runnerWriteErr
+			},
+		},
+	})
+
+	response := &failingSSEWriter{
+		header:    make(http.Header),
+		failAfter: 3,
+		err:       writeErr,
+	}
+	request := httptest.NewRequest(http.MethodPost, "/runs/stream", jsonBody(t, map[string]any{
+		"agent":  "codex",
+		"prompt": "hello",
+	}))
+	server.ServeHTTP(response, request)
+
+	if !errors.Is(runnerWriteErr, writeErr) {
+		t.Fatalf("runner write error = %v, want %v", runnerWriteErr, writeErr)
+	}
+	if response.statusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.statusCode, http.StatusOK)
+	}
+	if body := response.body.String(); strings.Contains(body, "chunk after disconnect") {
+		t.Fatalf("response body contains failed delta:\n%s", body)
+	}
+}
+
+type failingSSEWriter struct {
+	header     http.Header
+	body       bytes.Buffer
+	err        error
+	statusCode int
+	writes     int
+	failAfter  int
+}
+
+func (w *failingSSEWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *failingSSEWriter) WriteHeader(statusCode int) {
+	w.statusCode = statusCode
+}
+
+func (w *failingSSEWriter) Write(payload []byte) (int, error) {
+	if w.writes >= w.failAfter {
+		return 0, w.err
+	}
+	w.writes++
+	return w.body.Write(payload)
+}
+
+func (w *failingSSEWriter) Flush() {}

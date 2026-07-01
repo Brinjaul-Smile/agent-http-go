@@ -14,8 +14,16 @@ import (
 	"github.com/Brinjaul-Smile/agent-http-go/internal/agenthttp"
 )
 
-// defaultShutdownTimeout 是优雅关闭 HTTP 服务的默认等待时间。
-const defaultShutdownTimeout = 10 * time.Second
+const (
+	// defaultShutdownTimeout 是优雅关闭 HTTP 服务的默认等待时间。
+	defaultShutdownTimeout = 10 * time.Second
+	// defaultReadHeaderTimeout 限制读取 HTTP 请求头的时间，防止慢连接长期占用。
+	defaultReadHeaderTimeout = 5 * time.Second
+	// defaultReadTimeout 限制读取完整请求体的时间；SSE 响应不设置 WriteTimeout。
+	defaultReadTimeout = 30 * time.Second
+	// defaultIdleTimeout 限制 keep-alive 空闲连接保留时间。
+	defaultIdleTimeout = 120 * time.Second
+)
 
 // main 是 agent-http-go 服务入口，依次完成配置加载、日志初始化、会话存储创建和 HTTP 服务启动。
 func main() {
@@ -73,8 +81,11 @@ func serve(ctx context.Context, config Config, logger *slog.Logger) error {
 	// 使用标准库 slog 记录启动和异常退出，避免混用 fmt/log 输出。
 	addr := config.Host + ":" + config.Port
 	server := &http.Server{
-		Addr:    addr,
-		Handler: handler,
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: config.ReadHeaderTimeout,
+		ReadTimeout:       config.ReadTimeout,
+		IdleTimeout:       config.IdleTimeout,
 	}
 	return runHTTPServer(ctx, server, logger, config.ShutdownTimeout)
 }

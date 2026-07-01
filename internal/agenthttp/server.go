@@ -224,7 +224,7 @@ func (s *Server) selectRunner(path string, body RunRequest) (Runner, error) {
 		return runner, nil
 	}
 
-	runner, ok := s.runners[body.Agent]
+	runner, ok := s.runners[requestAgent(body)]
 	if !ok {
 		return nil, NewRequestError("agent must be one of: "+strings.Join(s.runnerNames(), ", "), http.StatusBadRequest)
 	}
@@ -242,7 +242,7 @@ func (s *Server) selectStreamRunner(path string, body RunRequest) (StreamRunner,
 		return runner, nil
 	}
 
-	runner, ok := s.streamRunners[body.Agent]
+	runner, ok := s.streamRunners[requestAgent(body)]
 	if !ok {
 		return nil, NewRequestError("agent must be one of: "+strings.Join(s.runnerNames(), ", "), http.StatusBadRequest)
 	}

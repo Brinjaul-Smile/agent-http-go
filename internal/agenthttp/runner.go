@@ -10,12 +10,17 @@ import (
 	"time"
 )
 
-// DefaultTimeout 是单次 agent CLI 执行允许的最长时间。
-const DefaultTimeout = 10 * time.Minute
+const (
+	// DefaultTimeout 是单次 agent CLI 执行允许的最长时间。
+	DefaultTimeout = 10 * time.Minute
+	// DefaultAgent 是 /runs 系列接口未显式指定 agent 时使用的后端。
+	DefaultAgent = "claude"
+)
 
 // RunRequest 表示 /runs 和 /codex 接口接收的 JSON 请求体。
 type RunRequest struct {
-	// Agent 指定 /runs 使用的后端 runner；/codex 兼容接口会忽略该字段。
+	// Agent 指定 /runs 使用的后端 runner；为空时默认使用 claude。
+	// /codex 兼容接口会忽略该字段。
 	Agent string `json:"agent"`
 	// Prompt 是传给 agent CLI 的用户输入。
 	Prompt string `json:"prompt"`
@@ -87,6 +92,14 @@ func ValidatePrompt(body RunRequest) (string, error) {
 		return "", NewRequestError("prompt must be a non-empty string", http.StatusBadRequest)
 	}
 	return body.Prompt, nil
+}
+
+// requestAgent 返回 /runs 系列接口实际使用的 agent 名称。
+func requestAgent(body RunRequest) string {
+	if body.Agent == "" {
+		return DefaultAgent
+	}
+	return body.Agent
 }
 
 // ResolveWorkspaceCwd 解析请求传入的 cwd，并防止它逃逸出服务工作区。

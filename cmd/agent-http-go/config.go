@@ -38,6 +38,10 @@ type Config struct {
 	Port string
 	// ShutdownTimeout 控制收到中断信号后等待 HTTP 服务优雅关闭的最长时间。
 	ShutdownTimeout time.Duration
+	// ReadHeaderTimeout、ReadTimeout 和 IdleTimeout 控制 HTTP 连接生命周期。
+	ReadHeaderTimeout time.Duration
+	ReadTimeout       time.Duration
+	IdleTimeout       time.Duration
 	// LogRoutes 控制启动时是否把注册路由写入日志。
 	LogRoutes bool
 	// MaxBodyBytes 限制 JSON 请求体大小，避免过大的 prompt 或调试载荷占用内存。
@@ -91,6 +95,10 @@ type serverConfig struct {
 	Port string `yaml:"port"`
 	// shutdownTimeout 使用 Go duration 格式，例如 10s、1m。
 	ShutdownTimeout string `yaml:"shutdownTimeout"`
+	// readHeaderTimeout/readTimeout/idleTimeout 使用 Go duration 格式。
+	ReadHeaderTimeout string `yaml:"readHeaderTimeout"`
+	ReadTimeout       string `yaml:"readTimeout"`
+	IdleTimeout       string `yaml:"idleTimeout"`
 	// logRoutes 为 true 时启动阶段会输出所有注册路由。
 	LogRoutes bool `yaml:"logRoutes"`
 	// maxBodySize 支持 B、KiB、MiB、GiB 或裸字节数。
@@ -162,6 +170,9 @@ func LoadConfig(options ConfigOptions) (Config, error) {
 		Host:                   defaultHost,
 		Port:                   defaultPort,
 		ShutdownTimeout:        defaultShutdownTimeout,
+		ReadHeaderTimeout:      defaultReadHeaderTimeout,
+		ReadTimeout:            defaultReadTimeout,
+		IdleTimeout:            defaultIdleTimeout,
 		MaxBodyBytes:           defaultMaxBody,
 		RunnerTimeout:          defaultTimeout,
 		CodexCommand:           defaultCodexCommand,
@@ -200,6 +211,27 @@ func LoadConfig(options ConfigOptions) (Config, error) {
 			return Config{}, err
 		}
 		config.ShutdownTimeout = timeout
+	}
+	if fileConfig.Server.ReadHeaderTimeout != "" {
+		timeout, err := time.ParseDuration(fileConfig.Server.ReadHeaderTimeout)
+		if err != nil {
+			return Config{}, err
+		}
+		config.ReadHeaderTimeout = timeout
+	}
+	if fileConfig.Server.ReadTimeout != "" {
+		timeout, err := time.ParseDuration(fileConfig.Server.ReadTimeout)
+		if err != nil {
+			return Config{}, err
+		}
+		config.ReadTimeout = timeout
+	}
+	if fileConfig.Server.IdleTimeout != "" {
+		timeout, err := time.ParseDuration(fileConfig.Server.IdleTimeout)
+		if err != nil {
+			return Config{}, err
+		}
+		config.IdleTimeout = timeout
 	}
 	config.LogRoutes = fileConfig.Server.LogRoutes
 	if fileConfig.Server.MaxBodySize != "" {
